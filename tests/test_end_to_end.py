@@ -63,3 +63,41 @@ async def test_end_to_end_clarify_then_confirm(monkeypatch):
     assert second_response.function_analysis.result == "小雅曲艺"
     assert second_response.function_analysis.target == "京剧"
     assert second_response.function_analysis.need_clarify is False
+
+
+@pytest.mark.asyncio
+async def test_command_service_merges_advice_into_msg():
+    fake_llm = SequencedFakeDoubao(
+        [
+            {
+                "intent_code": "UNKNOWN",
+                "advice": "建议先适当休息，观察头晕情况。",
+                "safety_notice": "小雅的建议仅供参考，如症状持续请及时咨询医生。",
+                "clarify_message": "需要我为您提供更多健康建议还是帮您联系医生咨询呢？",
+                "need_clarify": True,
+                "confidence": 0.6,
+            }
+        ]
+    )
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    manager = ConversationManager()
+    settings = Settings(
+        DOUBAO_API_KEY="test",
+        DOUBAO_MODEL="test-model",
+        DOUBAO_API_URL="https://example.com",
+        DOUBAO_TIMEOUT=5.0,
+        CONFIDENCE_THRESHOLD=0.7,
+        ENVIRONMENT="test",
+    )
+    service = CommandService(classifier, manager, settings)
+
+    response = await service.handle_command(
+        CommandRequest(sessionId="sess-2", query="我有点头疼")
+    )
+
+    assert response.function_analysis.advice is not None
+    assert response.function_analysis.safety_notice is not None
+    assert response.function_analysis.need_clarify is True
+    assert "建议先适当休息" in response.msg
+    assert "小雅的建议仅供参考" in response.msg
+    assert "联系医生咨询" in response.msg

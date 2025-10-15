@@ -119,10 +119,12 @@ def apply_time_rule(context: RuleContext) -> Optional[RuleResult]:
 
 
 def apply_settings_rule(context: RuleContext) -> Optional[RuleResult]:
-    """系统设置相关指令（声音/亮度等）。"""
+    """系统设置相关指令（声音/亮度/息屏等）。"""
     q = context.query
     if "设置" in q:
         return RuleResult(IntentCode.SETTINGS_GENERAL, "小雅设置")
+    if any(term in q for term in ["关机", "关闭屏幕", "息屏", "屏幕关闭", "关闭显示"]):
+        return RuleResult(IntentCode.DEVICE_SCREEN_OFF, "息屏", confidence=0.95)
     if "声音" in q:
         if "低" in q or "小" in q or "减" in q:
             return RuleResult(IntentCode.SETTINGS_SOUND_DOWN, "声音调低")
@@ -267,6 +269,12 @@ def apply_education_rule(context: RuleContext) -> Optional[RuleResult]:
 
 def apply_entertainment_rule(context: RuleContext) -> Optional[RuleResult]:
     q = context.query
+    if any(term in q for term in ["关闭音乐", "关掉音乐", "停音乐", "停止音乐"]):
+        return RuleResult(IntentCode.ENTERTAINMENT_MUSIC_OFF, "关闭音乐", confidence=0.95)
+    if any(term in q for term in ["关闭听书", "关闭听小说", "停听书", "停止听书", "听书关闭"]):
+        return RuleResult(IntentCode.ENTERTAINMENT_AUDIOBOOK_OFF, "关闭听书", confidence=0.95)
+    if any(term in q for term in ["关闭戏曲", "关闭曲艺", "停戏曲", "停止戏曲"]):
+        return RuleResult(IntentCode.ENTERTAINMENT_OPERA_OFF, "关闭戏曲", confidence=0.95)
     if any(term in q for term in ["娱乐", "玩", "游戏"]):
         if "斗地主" in q:
             return RuleResult(IntentCode.GAME_DOU_DI_ZHU, "斗地主")

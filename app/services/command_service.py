@@ -9,6 +9,39 @@ from app.services.intent_classifier import IntentClassifier
 from app.core.config import Settings
 
 
+def _compose_response_message(function_analysis: FunctionAnalysis, fallback: str) -> str:
+    """
+    根据分析结果动态拼接返回给前端的 msg。
+    优先包含 advice、安全提示，再附加澄清或默认回复。
+    """
+    parts: list[str] = []
+    seen: set[str] = set()
+
+    def add(text: str | None) -> None:
+        if not text:
+            return
+        candidate = text.strip()
+        if candidate and candidate not in seen:
+            parts.append(candidate)
+            seen.add(candidate)
+
+    add(function_analysis.advice)
+    add(function_analysis.safety_notice)
+
+    if function_analysis.need_clarify and function_analysis.clarify_message:
+        add(function_analysis.clarify_message)
+    else:
+        add(fallback)
+
+    if not parts:
+        add(function_analysis.clarify_message)
+
+    if not parts:
+        parts.append("好的，我在这里，随时为您服务。")
+
+    return " ".join(parts)
+
+
 class CommandService:
     """命令服务门面，负责协调意图识别与会话状态更新。"""
 
@@ -61,6 +94,8 @@ class CommandService:
             reply_message = function_analysis.clarify_message or "请再描述一次您的需求。"
             raw_output = ""
 
+        response_message = _compose_response_message(function_analysis, reply_message)
+
         logger.debug(
             "classification_output",
             session_id=session_id,
@@ -71,14 +106,14 @@ class CommandService:
         self._conversation_manager.update_state(
             session_id=session_id,
             query=payload.query,
-            response_message=reply_message,
+            response_message=response_message,
             function_analysis=function_analysis,
             raw_llm_output=raw_output,
         )
 
         return CommandResponse(
             code=200,
-            msg=reply_message,
+            msg=response_message,
             sessionId=session_id,
             function_analysis=function_analysis,
         )

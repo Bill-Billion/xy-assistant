@@ -88,3 +88,31 @@ def test_health_monitor_sleep():
     assert result
     assert result.intent_code == IntentCode.HEALTH_MONITOR_SLEEP
     assert result.result == "睡眠监测"
+
+
+def test_close_music_command():
+    result = run_rules("请帮我关闭音乐")
+    assert result
+    assert result.intent_code == IntentCode.ENTERTAINMENT_MUSIC_OFF
+    assert result.result == "关闭音乐"
+
+
+def test_close_audiobook_command():
+    result = run_rules("把听书关闭")
+    assert result
+    assert result.intent_code == IntentCode.ENTERTAINMENT_AUDIOBOOK_OFF
+    assert result.result == "关闭听书"
+
+
+def test_close_opera_command():
+    result = run_rules("关闭戏曲")
+    assert result
+    assert result.intent_code == IntentCode.ENTERTAINMENT_OPERA_OFF
+    assert result.result == "关闭戏曲"
+
+
+def test_screen_off_command():
+    result = run_rules("帮我息屏")
+    assert result
+    assert result.intent_code == IntentCode.DEVICE_SCREEN_OFF
+    assert result.result == "息屏"

@@ -65,6 +65,10 @@ class IntentCode(str, Enum):
     GAME_DOU_DI_ZHU = "GAME_DOU_DI_ZHU"
     GAME_CHINESE_CHESS = "GAME_CHINESE_CHESS"
     CHAT = "CHAT"
+    ENTERTAINMENT_MUSIC_OFF = "ENTERTAINMENT_MUSIC_OFF"
+    ENTERTAINMENT_AUDIOBOOK_OFF = "ENTERTAINMENT_AUDIOBOOK_OFF"
+    ENTERTAINMENT_OPERA_OFF = "ENTERTAINMENT_OPERA_OFF"
+    DEVICE_SCREEN_OFF = "DEVICE_SCREEN_OFF"
     MALL_GENERAL = "MALL_GENERAL"
     MALL_DIGITAL_HEALTH_ROBOT = "MALL_DIGITAL_HEALTH_ROBOT"
     MALL_HEALTH_MONITOR_TERMINAL = "MALL_HEALTH_MONITOR_TERMINAL"
@@ -146,6 +150,10 @@ INTENT_DEFINITIONS: dict[IntentCode, IntentDefinition] = {
     IntentCode.GAME_DOU_DI_ZHU: IntentDefinition(IntentCode.GAME_DOU_DI_ZHU, "斗地主"),
     IntentCode.GAME_CHINESE_CHESS: IntentDefinition(IntentCode.GAME_CHINESE_CHESS, "中国象棋"),
     IntentCode.CHAT: IntentDefinition(IntentCode.CHAT, "语音陪伴或聊天"),
+    IntentCode.ENTERTAINMENT_MUSIC_OFF: IntentDefinition(IntentCode.ENTERTAINMENT_MUSIC_OFF, "关闭音乐"),
+    IntentCode.ENTERTAINMENT_AUDIOBOOK_OFF: IntentDefinition(IntentCode.ENTERTAINMENT_AUDIOBOOK_OFF, "关闭听书"),
+    IntentCode.ENTERTAINMENT_OPERA_OFF: IntentDefinition(IntentCode.ENTERTAINMENT_OPERA_OFF, "关闭戏曲"),
+    IntentCode.DEVICE_SCREEN_OFF: IntentDefinition(IntentCode.DEVICE_SCREEN_OFF, "息屏"),
     IntentCode.MALL_GENERAL: IntentDefinition(IntentCode.MALL_GENERAL, "商城"),
     IntentCode.MALL_DIGITAL_HEALTH_ROBOT: IntentDefinition(IntentCode.MALL_DIGITAL_HEALTH_ROBOT, "数字健康机器人"),
     IntentCode.MALL_HEALTH_MONITOR_TERMINAL: IntentDefinition(IntentCode.MALL_HEALTH_MONITOR_TERMINAL, "健康监测终端"),
