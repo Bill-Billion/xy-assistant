@@ -1,3 +1,4 @@
+from datetime import datetime
 import pytest
 
 from app.core.config import Settings
@@ -101,3 +102,65 @@ async def test_command_service_merges_advice_into_msg():
     assert "建议先适当休息" in response.msg
     assert "小雅的建议仅供参考" in response.msg
     assert "联系医生咨询" in response.msg
+
+
+@pytest.mark.asyncio
+async def test_alarm_template_message(monkeypatch):
+    fake_llm = SequencedFakeDoubao([
+        {
+            "intent_code": "ALARM_CREATE",
+            "result": "新增闹钟",
+            "target": "0d18h0m",
+            "event": None,
+            "status": None,
+            "confidence": 0.95,
+            "reply": "已经设置。",
+        }
+    ])
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    manager = ConversationManager()
+    settings = Settings(
+        DOUBAO_API_KEY="test",
+        DOUBAO_MODEL="test-model",
+        DOUBAO_API_URL="https://example.com",
+        DOUBAO_TIMEOUT=5.0,
+        CONFIDENCE_THRESHOLD=0.7,
+        ENVIRONMENT="test",
+    )
+    service = CommandService(classifier, manager, settings)
+    from app.services import command_service as cs_module
+    from app.utils.time_utils import EAST_EIGHT
+    fake_now = datetime(2024, 9, 20, 10, 0, tzinfo=EAST_EIGHT)
+    monkeypatch.setattr(cs_module, "now_e8", lambda: fake_now)
+    response = await service.handle_command(
+        CommandRequest(sessionId="sess-alarm", query="帮我订个6点的闹钟")
+    )
+    assert response.msg.startswith("好的，我已为您设置今天18:00的闹钟。")
+
+
+@pytest.mark.asyncio
+async def test_close_music_template_message():
+    fake_llm = SequencedFakeDoubao([
+        {
+            "intent_code": "ENTERTAINMENT_MUSIC_OFF",
+            "result": "关闭音乐",
+            "target": "",
+            "confidence": 0.9,
+            "reply": "正在关闭音乐。",
+        }
+    ])
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    manager = ConversationManager()
+    settings = Settings(
+        DOUBAO_API_KEY="test",
+        DOUBAO_MODEL="test-model",
+        DOUBAO_API_URL="https://example.com",
+        DOUBAO_TIMEOUT=5.0,
+        CONFIDENCE_THRESHOLD=0.7,
+        ENVIRONMENT="test",
+    )
+    service = CommandService(classifier, manager, settings)
+    response = await service.handle_command(
+        CommandRequest(sessionId="sess-close", query="关闭音乐")
+    )
+    assert response.msg == "好的，正在关闭音乐。"

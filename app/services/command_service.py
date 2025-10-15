@@ -7,12 +7,61 @@ from app.schemas.response import CommandResponse, FunctionAnalysis
 from app.services.conversation import ConversationManager
 from app.services.intent_classifier import IntentClassifier
 from app.core.config import Settings
+from app.utils.time_utils import describe_alarm_target, now_e8
+
+
+HEALTH_MONITOR_RESULTS = {
+    "健康监测",
+    "血压监测",
+    "血氧监测",
+    "心率监测",
+    "血糖监测",
+    "血脂监测",
+    "体重监测",
+    "体温监测",
+    "血红蛋白监测",
+    "尿酸监测",
+    "睡眠监测",
+}
+
+
+def _render_template(function_analysis: FunctionAnalysis) -> str | None:
+    """根据结果字段选择固定回复模板。返回 (模板文本, 可能的枚举意图)."""
+    result = function_analysis.result or ""
+
+    if result == "新增闹钟":
+        readable_target = describe_alarm_target(function_analysis.target or "", now_e8())
+        message = f"好的，我已为您设置{readable_target}的闹钟。"
+        if function_analysis.event:
+            message += f" 提醒事项：{function_analysis.event}。"
+        if function_analysis.status:
+            message += f" 频次：{function_analysis.status}。"
+        return message.strip()
+
+    if result == "关闭音乐":
+        return "好的，正在关闭音乐。"
+
+    if result == "关闭听书":
+        return "好的，正在关闭听书。"
+
+    if result == "关闭戏曲":
+        return "好的，正在关闭戏曲。"
+
+    if result in HEALTH_MONITOR_RESULTS:
+        if function_analysis.target:
+            return f"好的，我已为{function_analysis.target}打开{result}功能。"
+        return f"好的，我已为您打开{result}功能。"
+
+    if result == "息屏":
+        return "好的，正在为您息屏。"
+
+    return None
 
 
 def _compose_response_message(function_analysis: FunctionAnalysis, fallback: str) -> str:
     """
     根据分析结果动态拼接返回给前端的 msg。
-    优先包含 advice、安全提示，再附加澄清或默认回复。
+    可执行意图优先使用模板，咨询类按“建议→安全提示→澄清”组合。
     """
     parts: list[str] = []
     seen: set[str] = set()
@@ -25,16 +74,24 @@ def _compose_response_message(function_analysis: FunctionAnalysis, fallback: str
             parts.append(candidate)
             seen.add(candidate)
 
-    add(function_analysis.advice)
-    add(function_analysis.safety_notice)
+    template_text = _render_template(function_analysis)
 
-    if function_analysis.need_clarify and function_analysis.clarify_message:
-        add(function_analysis.clarify_message)
+    if template_text:
+        add(template_text)
+        add(function_analysis.advice)
+        add(function_analysis.safety_notice)
+        if function_analysis.need_clarify and function_analysis.clarify_message:
+            add(function_analysis.clarify_message)
     else:
-        add(fallback)
+        add(function_analysis.advice)
+        add(function_analysis.safety_notice)
+        if function_analysis.need_clarify and function_analysis.clarify_message:
+            add(function_analysis.clarify_message)
+        else:
+            add(fallback)
 
     if not parts:
-        add(function_analysis.clarify_message)
+        add(function_analysis.clarify_message or fallback)
 
     if not parts:
         parts.append("好的，我在这里，随时为您服务。")

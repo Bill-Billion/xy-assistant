@@ -285,3 +285,51 @@ def extract_medicine(text: str) -> Optional[str]:
     if match:
         return match.group("name")
     return None
+
+
+def describe_alarm_target(target: str, base_time: Optional[datetime] = None) -> str:
+    """将闹钟 target（0d18h0m / +0d0h10m）转换为易读的中文描述。"""
+    if not target:
+        return "指定时间"
+
+    base_time = base_time or now_e8()
+    absolute_pattern = re.compile(r"(?P<days>\d+)d(?P<hours>\d+)h(?P<minutes>\d+)m")
+    relative_pattern = re.compile(r"\+(?P<days>\d+)d(?P<hours>\d+)h(?P<minutes>\d+)m")
+
+    if relative_match := relative_pattern.fullmatch(target):
+        days = int(relative_match.group("days"))
+        hours = int(relative_match.group("hours"))
+        minutes = int(relative_match.group("minutes"))
+        parts: list[str] = []
+        if days:
+            parts.append(f"{days}天")
+        if hours:
+            parts.append(f"{hours}小时")
+        if minutes:
+            parts.append(f"{minutes}分钟")
+        if not parts:
+            parts.append("0分钟")
+        return "".join(parts) + "后"
+
+    absolute_match = absolute_pattern.fullmatch(target)
+    if not absolute_match:
+        return target
+
+    day_offset = int(absolute_match.group("days"))
+    hour = int(absolute_match.group("hours"))
+    minute = int(absolute_match.group("minutes"))
+
+    target_time = base_time + timedelta(days=day_offset)
+    target_time = target_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+    if day_offset == 0:
+        day_text = "今天"
+    elif day_offset == 1:
+        day_text = "明天"
+    elif day_offset == 2:
+        day_text = "后天"
+    else:
+        day_text = target_time.strftime("%m月%d日")
+
+    time_text = target_time.strftime("%H:%M")
+    return f"{day_text}{time_text}"
