@@ -63,6 +63,9 @@ def _compose_response_message(function_analysis: FunctionAnalysis, fallback: str
     根据分析结果动态拼接返回给前端的 msg。
     可执行意图优先使用模板，咨询类按“建议→安全提示→澄清”组合。
     """
+    if function_analysis.need_clarify and function_analysis.clarify_message:
+        return function_analysis.clarify_message.strip()
+
     parts: list[str] = []
     seen: set[str] = set()
 
@@ -78,21 +81,13 @@ def _compose_response_message(function_analysis: FunctionAnalysis, fallback: str
 
     if template_text:
         add(template_text)
-        if function_analysis.need_clarify and function_analysis.clarify_message:
-            add(function_analysis.clarify_message)
     else:
         add(function_analysis.advice)
         add(function_analysis.safety_notice)
-        if function_analysis.need_clarify and function_analysis.clarify_message:
-            add(function_analysis.clarify_message)
-        else:
-            add(fallback)
+        add(fallback)
 
     if not parts:
-        add(function_analysis.clarify_message or fallback)
-
-    if not parts:
-        parts.append("好的，我在这里，随时为您服务。")
+        parts.append(fallback)
 
     return " ".join(parts)
 

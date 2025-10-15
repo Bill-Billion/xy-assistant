@@ -99,9 +99,7 @@ async def test_command_service_merges_advice_into_msg():
     assert response.function_analysis.advice is not None
     assert response.function_analysis.safety_notice is not None
     assert response.function_analysis.need_clarify is True
-    assert "建议先适当休息" in response.msg
-    assert "小雅的建议仅供参考" in response.msg
-    assert "联系医生咨询" in response.msg
+    assert response.msg == "需要我为您提供更多健康建议还是帮您联系医生咨询呢？"
 
 
 @pytest.mark.asyncio
@@ -197,5 +195,4 @@ async def test_alarm_tomorrow_morning_message(monkeypatch):
     response = await service.handle_command(
         CommandRequest(sessionId="sess-alarm-2", query="明早9点提醒我吃药")
     )
-    assert response.msg.startswith("好的，我已为您设置明天09:00的闹钟。 提醒事项：吃药。")
-    assert "小雅的建议仅供参考" not in response.msg
+    assert response.msg == "好的，我已为您设置明天09:00的闹钟。 提醒事项：吃药。"
