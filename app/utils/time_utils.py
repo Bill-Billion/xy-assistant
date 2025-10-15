@@ -143,11 +143,26 @@ _meridiem_keywords = {
     "晚": "pm",
 }
 
+_TIME_REPLACEMENTS = [
+    ("明早上", "明天早上"),
+    ("明早", "明天早上"),
+    ("明天早晨", "明天早上"),
+    ("明儿早上", "明天早上"),
+    ("明儿", "明天"),
+]
+
+
+def _normalize_time_phrases(text: str) -> str:
+    normalized = text
+    for original, replacement in _TIME_REPLACEMENTS:
+        normalized = normalized.replace(original, replacement)
+    return normalized
+
 
 def extract_time_expression(text: str, base_time: Optional[datetime] = None) -> Optional[TimeExpression]:
     """抽取文本中的时间表达（绝对时间 / 相对时间 / 周期描述）。"""
     base_time = base_time or now_e8()
-    cleaned = text.strip()
+    cleaned = _normalize_time_phrases(text.strip())
     expr = TimeExpression(raw_text=None)
 
     rel_match = _relative_pattern.search(cleaned)
@@ -246,12 +261,14 @@ def derive_alarm_target(
 
 def extract_event(text: str) -> Optional[str]:
     """从提醒语句中抽取事件关键词。"""
-    cleaned = re.sub(r"提醒(我)?", "", text)
+    cleaned = _normalize_time_phrases(text)
+    cleaned = re.sub(r"提醒(我)?", "", cleaned)
     cleaned = re.sub(r"(闹钟|设定|设置|帮我|一下|一个|请|安排|订个?)", "", cleaned)
     cleaned = re.sub(_relative_pattern, "", cleaned)
     cleaned = re.sub(_time_pattern, "", cleaned)
     cleaned = cleaned.replace("每周", "").replace("每天", "")
-    cleaned = re.sub(r"的$", "", cleaned)  # 移除末尾的"的"
+    cleaned = cleaned.replace("明天", "").replace("明早", "")
+    cleaned = re.sub(r"的$", "", cleaned)
     cleaned = cleaned.strip()
     return cleaned or None
 

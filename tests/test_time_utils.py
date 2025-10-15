@@ -42,3 +42,13 @@ def test_relative_reminder():
     assert target == "+0d0h10m"
     assert event == "煮饭"
     assert status is None
+
+
+def test_tomorrow_morning_alarm():
+    base = datetime(2024, 9, 20, 14, 0, tzinfo=EAST_EIGHT)
+    query = "明早9点提醒我吃药"
+    expr = extract_time_expression(query, base)
+    target, event, status = derive_alarm_target(query, base, expr)
+    assert target == "1d9h0m"
+    assert event == "吃药"
+    assert status is None

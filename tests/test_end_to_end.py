@@ -135,7 +135,7 @@ async def test_alarm_template_message(monkeypatch):
     response = await service.handle_command(
         CommandRequest(sessionId="sess-alarm", query="帮我订个6点的闹钟")
     )
-    assert response.msg.startswith("好的，我已为您设置今天18:00的闹钟。")
+    assert response.msg == "好的，我已为您设置今天18:00的闹钟。"
 
 
 @pytest.mark.asyncio
@@ -164,3 +164,38 @@ async def test_close_music_template_message():
         CommandRequest(sessionId="sess-close", query="关闭音乐")
     )
     assert response.msg == "好的，正在关闭音乐。"
+
+
+@pytest.mark.asyncio
+async def test_alarm_tomorrow_morning_message(monkeypatch):
+    fake_llm = SequencedFakeDoubao([
+        {
+            "intent_code": "ALARM_REMINDER",
+            "result": "新增闹钟",
+            "target": "1d9h0m",
+            "event": "吃药",
+            "status": None,
+            "confidence": 0.95,
+            "reply": "好的",
+        }
+    ])
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    manager = ConversationManager()
+    settings = Settings(
+        DOUBAO_API_KEY="test",
+        DOUBAO_MODEL="test-model",
+        DOUBAO_API_URL="https://example.com",
+        DOUBAO_TIMEOUT=5.0,
+        CONFIDENCE_THRESHOLD=0.7,
+        ENVIRONMENT="test",
+    )
+    service = CommandService(classifier, manager, settings)
+    from app.services import command_service as cs_module
+    from app.utils.time_utils import EAST_EIGHT
+    fake_now = datetime(2024, 9, 20, 10, 0, tzinfo=EAST_EIGHT)
+    monkeypatch.setattr(cs_module, "now_e8", lambda: fake_now)
+    response = await service.handle_command(
+        CommandRequest(sessionId="sess-alarm-2", query="明早9点提醒我吃药")
+    )
+    assert response.msg.startswith("好的，我已为您设置明天09:00的闹钟。 提醒事项：吃药。")
+    assert "小雅的建议仅供参考" not in response.msg

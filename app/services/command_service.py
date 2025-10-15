@@ -78,8 +78,6 @@ def _compose_response_message(function_analysis: FunctionAnalysis, fallback: str
 
     if template_text:
         add(template_text)
-        add(function_analysis.advice)
-        add(function_analysis.safety_notice)
         if function_analysis.need_clarify and function_analysis.clarify_message:
             add(function_analysis.clarify_message)
     else:
