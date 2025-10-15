@@ -1,0 +1,43 @@
+# Docker镜像忽略文件
+# 开发文件
+.env
+.env.local
+.env.example
+*.log
+logs/
+
+# 测试文件
+tests/
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.coverage
+htmlcov/
+
+# 开发工具
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+
+# Git相关
+.git/
+.gitignore
+
+# 文档
+README.md
+API_DOCUMENTATION.md
+TODO.md
+
+# 本地数据
+data/
+scripts/
+
+# Python相关
+*.egg-info/
+build/
+dist/
+.tox/
