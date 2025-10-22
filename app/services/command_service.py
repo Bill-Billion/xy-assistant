@@ -84,7 +84,7 @@ def _compose_response_message(function_analysis: FunctionAnalysis, fallback: str
     else:
         add(function_analysis.advice)
         add(function_analysis.safety_notice)
-        add(fallback)
+        # add(fallback)
 
     if not parts:
         parts.append(fallback)

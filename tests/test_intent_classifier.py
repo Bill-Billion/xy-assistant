@@ -166,10 +166,11 @@ async def test_health_question_provides_advice_and_safety():
         meta={},
         conversation_state=state,
     )
-    assert outcome.function_analysis["result"] == ""
+    assert outcome.function_analysis["result"] == "健康科普"
+    assert "头晕" in outcome.function_analysis["target"]
     assert outcome.function_analysis["advice"]
     assert outcome.function_analysis["safety_notice"]
-    assert outcome.function_analysis["need_clarify"] is True
+    assert outcome.function_analysis["need_clarify"] is False
     assert "就医" in outcome.function_analysis["safety_notice"]
 
 
@@ -212,3 +213,23 @@ async def test_doctor_contact_audio():
     assert "高医生" in outcome.function_analysis["target"]
     assert outcome.function_analysis["need_clarify"] is False
     assert outcome.function_analysis["advice"] is None
+
+
+@pytest.mark.asyncio
+async def test_classifier_health_knowledge_query():
+    fake_llm = FakeDoubaoClient({
+        "intent_code": "UNKNOWN",
+        "confidence": 0.4,
+        "reply": "头疼可能与多种因素有关，我来为您科普一下。"
+    })
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    state = ConversationState(session_id="edu")
+    outcome = await classifier.classify(
+        session_id="edu",
+        query="怎么判断有没有高血压",
+        meta={},
+        conversation_state=state,
+    )
+    assert outcome.function_analysis["result"] == "健康科普"
+    assert outcome.function_analysis["target"] == "判断高血压"
+    assert outcome.function_analysis["need_clarify"] is False

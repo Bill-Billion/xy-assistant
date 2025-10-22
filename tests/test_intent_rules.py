@@ -90,6 +90,44 @@ def test_health_monitor_sleep():
     assert result.result == "睡眠监测"
 
 
+def test_health_knowledge_prefix_question():
+    result = run_rules("怎么判断有没有高血压")
+    assert result
+    assert result.intent_code == IntentCode.HEALTH_EDUCATION
+    assert result.result == "健康科普"
+    assert result.target == "判断高血压"
+
+
+def test_health_knowledge_suffix_question():
+    result = run_rules("鼻炎老是犯怎么办")
+    assert result
+    assert result.intent_code == IntentCode.HEALTH_EDUCATION
+    assert result.result == "健康科普"
+    assert result.target == "处理鼻炎老是犯"
+
+
+def test_health_knowledge_tell_me():
+    result = run_rules("给我讲讲高血压相关知识")
+    assert result
+    assert result.intent_code == IntentCode.HEALTH_EDUCATION
+    assert result.result == "健康科普"
+    assert result.target == "高血压相关知识"
+
+
+def test_health_evaluation_keyword():
+    result = run_rules("帮我做健康评估")
+    assert result
+    assert result.intent_code == IntentCode.HEALTH_EVALUATION
+    assert result.result == "健康评估"
+
+
+def test_health_evaluation_variation():
+    result = run_rules("请帮我评估一下健康状况")
+    assert result
+    assert result.intent_code == IntentCode.HEALTH_EVALUATION
+    assert result.result == "健康评估"
+
+
 def test_close_music_command():
     result = run_rules("请帮我关闭音乐")
     assert result

@@ -63,6 +63,187 @@ _health_metric_map = {
     "睡眠监测": (IntentCode.HEALTH_MONITOR_SLEEP, "睡眠监测"),
 }
 
+_health_evaluation_keywords = [
+    "健康评估",
+    "健康评价",
+    "健康状况评估",
+    "健康情况评估",
+    "健康状态评估",
+]
+
+_health_evaluation_support_terms = [
+    "健康",
+    "健康状况",
+    "健康情况",
+    "健康状态",
+    "身体状况",
+    "身体情况",
+    "身体状态",
+]
+
+_health_context_terms = {
+    "健康",
+    "疾病",
+    "病",
+    "症状",
+    "病情",
+    "治疗",
+    "诊断",
+    "预防",
+    "养生",
+    "保健",
+    "康复",
+    "用药",
+    "药物",
+    "饮食",
+    "作息",
+    "养护",
+    "护理",
+    "调理",
+    "康养",
+    "运动",
+    "锻炼",
+    "疼痛",
+    "头痛",
+    "头疼",
+    "头晕",
+    "眩晕",
+    "乏力",
+    "疲劳",
+    "发烧",
+    "发热",
+    "感冒",
+    "咳嗽",
+    "咳痰",
+    "喉咙",
+    "咽炎",
+    "鼻炎",
+    "胃",
+    "肠",
+    "肝",
+    "肾",
+    "胆",
+    "肺",
+    "眼睛",
+    "视力",
+    "血压",
+    "高血压",
+    "低血压",
+    "血糖",
+    "血脂",
+    "血氧",
+    "心脏",
+    "心率",
+    "心跳",
+    "糖尿病",
+    "骨质疏松",
+    "关节",
+    "睡眠",
+    "失眠",
+    "焦虑",
+    "抑郁",
+    "情绪",
+    "心理",
+    "康复训练",
+}
+_health_context_terms.update(_health_metric_map.keys())
+
+_knowledge_action_map = {
+    "判断": "判断",
+    "识别": "识别",
+    "区分": "区分",
+    "处理": "处理",
+    "解决": "处理",
+    "应对": "应对",
+    "缓解": "缓解",
+    "预防": "预防",
+    "怎么办": "处理",
+    "该怎么办": "处理",
+    "咋办": "处理",
+    "如何办": "处理",
+}
+
+_knowledge_prefix_patterns: list[tuple[re.Pattern[str], str | None]] = [
+    (re.compile(r"^(?:请|能否|能不能|帮我|帮忙)?(?:给我|给咱|给家里人)?(?:简单|详细)?(?:讲讲|介绍|说说|科普|解释|说明)(?P<topic>.+)$"), None),
+    (re.compile(r"^(?:请|能否|能不能|帮我|帮忙)?(?:告诉|告知|教)(?:我|一下)?(?P<topic>.+)$"), None),
+    (re.compile(r"^(?:请|能否|能不能|帮忙)?(?:给我)?科普一下(?P<topic>.+)$"), None),
+    (re.compile(r"^(?:怎么|如何|怎样)(判断|识别|区分)(?P<topic>.+)$"), "判断"),
+    (re.compile(r"^(?:怎么|如何|怎样)(处理|解决|应对|缓解|预防)(?P<topic>.+)$"), "处理"),
+    (re.compile(r"^(?:怎么|如何|怎样)预防(?P<topic>.+)$"), "预防"),
+]
+
+_knowledge_suffix_patterns: list[tuple[re.Pattern[str], str | None]] = [
+    (re.compile(r"(?P<topic>.+?)(?:怎么|如何|怎样)(处理|解决|应对|缓解|预防)(?:好)?$"), "处理"),
+    (re.compile(r"(?P<topic>.+?)(?:该)?(怎么办|咋办|如何办)$"), "处理"),
+    (re.compile(r"(?P<topic>.+?)的?(相关)?知识$"), None),
+]
+
+_topic_leading_phrases = [
+    "关于",
+    "有关",
+    "针对",
+    "一些",
+    "哪些",
+    "哪种",
+    "什么是",
+    "什么叫",
+    "什么叫做",
+    "什么",
+    "怎样才",
+    "如何才",
+    "怎么才",
+    "怎么样",
+    "如何能",
+    "怎样能",
+    "为什么",
+    "为何",
+    "有没有",
+    "是否",
+    "是不是",
+    "会不会",
+    "需不需要",
+    "用不用",
+]
+
+_topic_pronoun_prefixes = [
+    "我",
+    "自己",
+    "我们",
+    "家人",
+    "老人",
+    "爸",
+    "妈妈",
+    "爸爸",
+    "父亲",
+    "母亲",
+    "孩子",
+    "他",
+    "她",
+    "他们",
+    "她们",
+    "他爸",
+    "他妈",
+    "她爸",
+    "她妈",
+]
+
+_topic_trailing_phrases = [
+    "一下",
+    "一下下",
+    "呗",
+    "吧",
+    "么",
+    "吗",
+    "啊",
+    "呀",
+    "呢",
+    "嘛",
+    "呀",
+    "的",
+    "情况",
+    "方法",
+]
+
 
 def apply_weather_rule(context: RuleContext) -> Optional[RuleResult]:
     """天气相关意图匹配，优先识别今天/明天/后天，或处理指定日期。"""
@@ -138,9 +319,64 @@ def apply_settings_rule(context: RuleContext) -> Optional[RuleResult]:
     return None
 
 
+def _normalize_topic(raw_topic: str, action: str | None) -> str:
+    """清洗主题文本，保留核心疾病/症状关键词。"""
+    topic = (raw_topic or "").strip()
+    topic = re.sub(r"[？?！!。．\.、,，]+$", "", topic)
+    topic = topic.strip()
+    for phrase in _topic_leading_phrases:
+        if topic.startswith(phrase):
+            topic = topic[len(phrase):].lstrip()
+    for prefix in _topic_pronoun_prefixes:
+        if topic.startswith(prefix):
+            topic = topic[len(prefix):].lstrip("的 ")
+    topic = topic.strip()
+    for phrase in _topic_trailing_phrases:
+        if topic.endswith(phrase):
+            topic = topic[: -len(phrase)].rstrip()
+    topic = topic.strip()
+    if action:
+        action_clean = _knowledge_action_map.get(action, action)
+        if topic:
+            return f"{action_clean}{topic}"
+        return action_clean
+    return topic
+
+
+def _extract_health_knowledge_topic(query: str) -> Optional[str]:
+    """识别“讲讲/怎么判断/怎么办”等健康知识类问题，返回归一化主题。"""
+    text = query.strip()
+    for pattern, action in _knowledge_prefix_patterns:
+        match = pattern.match(text)
+        if not match:
+            continue
+        topic = _normalize_topic(match.group("topic"), action)
+        if topic and any(term in topic for term in _health_context_terms):
+            return topic
+    for pattern, action in _knowledge_suffix_patterns:
+        match = pattern.match(text)
+        if not match:
+            continue
+        extracted_action = action
+        if extracted_action is None:
+            extracted_action = match.groupdict().get("action")
+        topic = _normalize_topic(match.group("topic"), extracted_action)
+        if topic and any(term in topic for term in _health_context_terms):
+            return topic
+    return None
+
+
 def apply_health_rules(context: RuleContext) -> Optional[RuleResult]:
     """健康领域指令匹配，覆盖监测、评估、医生咨询等。"""
     q = context.query
+    knowledge_topic = _extract_health_knowledge_topic(q)
+    if knowledge_topic:
+        return RuleResult(IntentCode.HEALTH_EDUCATION, "健康科普", target=knowledge_topic, confidence=0.9)
+    if any(keyword in q for keyword in _health_evaluation_keywords) or (
+        "评估" in q and any(term in q for term in _health_evaluation_support_terms)
+    ):
+        person = extract_person_name(q)
+        return RuleResult(IntentCode.HEALTH_EVALUATION, "健康评估", target=person or "", confidence=0.95)
     if "健康监测" in q or "健康检测" in q:
         return RuleResult(IntentCode.HEALTH_MONITOR_GENERAL, "健康监测")
     for metric, (intent_code, result_text) in _health_metric_map.items():

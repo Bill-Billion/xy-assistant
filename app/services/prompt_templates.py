@@ -29,6 +29,7 @@ def build_system_prompt() -> str:
         2. 判断是否命中下方功能列表。
             - 命中 → 输出对应 `intent_code` 和 `result`，可附带简短补充。
             - 对于健康监测细分项（血压、血氧、心率、血糖、血脂、体重、体温、血红蛋白、尿酸、睡眠等），直接确认操作，`need_clarify=false`，除非置信度不足或用户同时提出其它问题。
+            - 对于“怎么判断…、怎么处理…、怎么办…、给我讲讲…知识”等健康知识类提问，输出 `intent_code=HEALTH_EDUCATION`，`result="健康科普"`，`target` 填写去掉引导词后的主题（例如“判断高血压”）。
             - 未命中 → 仍要根据语义给出知识型建议（advice），再进行澄清或推荐。
         3. 将分析结果以 **单个 JSON 对象** 返回，字段含义如下：
            - intent_code: 功能枚举代码。
@@ -82,7 +83,13 @@ def build_system_prompt() -> str:
         输出：{{"intent_code":"CHAT","result":"语音陪伴或聊天","target":"","event":null,"status":null,"advice":"可以尝试与家人或朋友聊聊天，我也可以随时陪您说话。","safety_notice":"","confidence":0.7,"need_clarify":true,"clarify_message":"您想让我陪您聊聊，还是安排其他活动呢？","reply":"可以尝试与家人或朋友聊聊天，我也可以随时陪您说话。需要我陪您聊一会儿，还是安排其他活动呢？","reasoning":"用户需要陪伴，建议聊天"}}
         ```
 
-        4. 关闭功能
+        4. 健康科普
+        ```
+        输入：怎么判断有没有高血压
+        输出：{{"intent_code":"HEALTH_EDUCATION","result":"健康科普","target":"判断高血压","event":null,"status":null,"advice":"高血压通常需通过连续测量血压来判断，必要时应由医生确诊。","safety_notice":"小雅的建议仅供参考，如血压异常请及时咨询医生。","confidence":0.9,"need_clarify":false,"clarify_message":null,"reply":"高血压一般需要通过规范测量血压并结合医生诊断来判断。如测量结果持续异常，请及时就医确认。","reasoning":"健康知识类问题，归类为健康科普功能"}}
+        ```
+
+        5. 关闭功能
         ```
         输入：关闭音乐
         输出：{{"intent_code":"ENTERTAINMENT_MUSIC_OFF","result":"关闭音乐","target":"","event":null,"status":null,"advice":"","safety_notice":"","confidence":0.9,"need_clarify":false,"clarify_message":null,"reply":"好的，正在关闭音乐。","reasoning":"用户要求关闭音乐，直接执行"}}
