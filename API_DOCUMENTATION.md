@@ -68,6 +68,7 @@ curl -X GET http://localhost:8001/health
 | code | int | 响应状态码，200表示成功 | 200 |
 | msg | string | 回复消息，面向用户的友好提示 | "好的，我已为您处理 新增闹钟 相关的请求。" |
 | sessionId | string | 会话ID | "test-session-001" |
+| requiresSelection | boolean | 是否需要前端继续引导/二次确认 | false |
 | function_analysis | object | 功能分析结果 | 见下表 |
 
 **function_analysis 字段说明**:
@@ -75,7 +76,7 @@ curl -X GET http://localhost:8001/health
 | 字段 | 类型 | 描述 | 示例 |
 |------|------|------|------|
 | result | string | 识别的功能类型 | "新增闹钟", "今天天气", "血压监测" |
-| target | string | 目标参数 | "0d18h0m", "今天", "爸爸" |
+| target | string | 目标参数 | "2024-09-20T18:00:00+08:00", "今天", "爸爸" |
 | event | string | 事件描述 | "煮饭", null |
 | status | string | 状态信息 | "每天早上", null |
 | confidence | float | 置信度 (0.0-1.0) | 0.95 |
@@ -104,11 +105,12 @@ curl -X POST http://localhost:8001/api/command \
 ```json
 {
   "code": 200,
-  "msg": "好的，我已为您处理 新增闹钟 相关的请求。",
+  "msg": "好的，我已为您设置今天18:00的闹钟。",
   "sessionId": "alarm-test-001",
+  "requiresSelection": false,
   "function_analysis": {
     "result": "新增闹钟",
-    "target": "0d18h0m",
+    "target": "2024-09-20T18:00:00+08:00",
     "event": null,
     "status": null,
     "confidence": 0.95,
@@ -135,13 +137,14 @@ curl -X POST http://localhost:8001/api/command \
 ```json
 {
   "code": 200,
-  "msg": "已为您设置10分钟后煮饭的提醒",
+  "msg": "已为您设置10分钟后煮饭的提醒。",
   "sessionId": "reminder-test-001",
+  "requiresSelection": false,
   "function_analysis": {
     "result": "新增闹钟",
-    "target": "+0d0h10m",
+    "target": "2024-09-20T10:10:00+08:00",
     "event": "煮饭",
-    "status": "10分钟后",
+    "status": null,
     "confidence": 0.95,
     "need_clarify": false,
     "clarify_message": "",

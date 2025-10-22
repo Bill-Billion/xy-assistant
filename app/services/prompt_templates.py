@@ -30,6 +30,7 @@ def build_system_prompt() -> str:
             - 命中 → 输出对应 `intent_code` 和 `result`，可附带简短补充。
             - 对于健康监测细分项（血压、血氧、心率、血糖、血脂、体重、体温、血红蛋白、尿酸、睡眠等），直接确认操作，`need_clarify=false`，除非置信度不足或用户同时提出其它问题。
             - 对于“怎么判断…、怎么处理…、怎么办…、给我讲讲…知识”等健康知识类提问，输出 `intent_code=HEALTH_EDUCATION`，`result="健康科普"`，`target` 填写去掉引导词后的主题（例如“判断高血压”）。
+            - 若 meta 中提供 `user_candidates`（例如 "小张,小杨"），在健康监测、健康评估、健康画像等需要对象的功能中，优先将 `target` 设置为最匹配的候选人名。若无法确定匹配，可置空并在 reasoning 中说明。
             - 未命中 → 仍要根据语义给出知识型建议（advice），再进行澄清或推荐。
         3. 将分析结果以 **单个 JSON 对象** 返回，字段含义如下：
            - intent_code: 功能枚举代码。
@@ -68,7 +69,7 @@ def build_system_prompt() -> str:
         1. 功能 + 建议
         ```
         输入：帮我订个6点的闹钟
-        输出：{{"intent_code":"ALARM_CREATE","result":"新增闹钟","target":"0d18h0m","event":null,"status":null,"advice":"","safety_notice":"","confidence":0.92,"need_clarify":false,"clarify_message":null,"reply":"好的，我已为您设置今天18:00的闹钟。","reasoning":"闹钟请求，规则命中"}}
+        输出：{{"intent_code":"ALARM_CREATE","result":"新增闹钟","target":"2024-09-20T18:00:00+08:00","event":null,"status":null,"advice":"","safety_notice":"","confidence":0.92,"need_clarify":false,"clarify_message":null,"reply":"好的，我已为您设置今天18:00的闹钟。","reasoning":"闹钟请求，规则命中"}}
         ```
 
         2. 健康咨询
@@ -89,7 +90,13 @@ def build_system_prompt() -> str:
         输出：{{"intent_code":"HEALTH_EDUCATION","result":"健康科普","target":"判断高血压","event":null,"status":null,"advice":"高血压通常需通过连续测量血压来判断，必要时应由医生确诊。","safety_notice":"小雅的建议仅供参考，如血压异常请及时咨询医生。","confidence":0.9,"need_clarify":false,"clarify_message":null,"reply":"高血压一般需要通过规范测量血压并结合医生诊断来判断。如测量结果持续异常，请及时就医确认。","reasoning":"健康知识类问题，归类为健康科普功能"}}
         ```
 
-        5. 关闭功能
+        5. 候选用户匹配
+        ```
+        输入：（meta.user_candidates="小张,小杨"） 晓阳
+        输出：{{"intent_code":"HEALTH_MONITOR_GENERAL","result":"健康监测","target":"小杨","event":null,"status":null,"advice":"","safety_notice":"","confidence":0.9,"need_clarify":false,"clarify_message":null,"reply":"好的，我已为小杨打开健康监测功能。","reasoning":"根据候选名单匹配用户目标"}}
+        ```
+
+        6. 关闭功能
         ```
         输入：关闭音乐
         输出：{{"intent_code":"ENTERTAINMENT_MUSIC_OFF","result":"关闭音乐","target":"","event":null,"status":null,"advice":"","safety_notice":"","confidence":0.9,"need_clarify":false,"clarify_message":null,"reply":"好的，正在关闭音乐。","reasoning":"用户要求关闭音乐，直接执行"}}

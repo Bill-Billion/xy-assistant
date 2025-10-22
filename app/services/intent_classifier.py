@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from difflib import SequenceMatcher
+from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
@@ -11,7 +12,7 @@ from app.services.intent_definitions import INTENT_DEFINITIONS, IntentCode
 from app.services.intent_rules import RuleResult, run_rules
 from app.services.llm_client import DoubaoClient
 from app.services.prompt_templates import build_system_prompt, get_allowed_results
-from app.utils.time_utils import now_e8
+from app.utils.time_utils import now_e8, sanitize_person_name
 
 
 
@@ -50,7 +51,27 @@ ACTIONABLE_CONTACT_INTENTS = {
 }
 
 # 所有可立即落地的意图合集。
-ACTIONABLE_INTENTS = ACTIONABLE_HEALTH_INTENTS | ACTIONABLE_CONTACT_INTENTS
+ACTIONABLE_INTENTS = ACTIONABLE_HEALTH_INTENTS | ACTIONABLE_CONTACT_INTENTS | {
+    IntentCode.ALARM_CREATE,
+    IntentCode.ALARM_REMINDER,
+    IntentCode.ALARM_VIEW,
+}
+
+RESULTS_REQUIRING_USER = {
+    "健康监测",
+    "血压监测",
+    "血氧监测",
+    "心率监测",
+    "血糖监测",
+    "血脂监测",
+    "体重监测",
+    "体温监测",
+    "血红蛋白监测",
+    "尿酸监测",
+    "睡眠监测",
+    "健康评估",
+    "健康画像",
+}
 
 
 @dataclass
@@ -105,6 +126,12 @@ class IntentClassifier:
             logger.exception("LLM 调用失败，采用规则兜底", error=str(exc))
 
         function_analysis = self._merge_results(rule_result, llm_parsed, query)
+        await self._resolve_user_target(
+            query=query,
+            function_analysis=function_analysis,
+            conversation_state=conversation_state,
+            meta=meta,
+        )
 
         reply_message = (
             llm_parsed.get("reply")
@@ -276,6 +303,136 @@ class IntentClassifier:
         }
 
         return function_analysis
+
+    async def _resolve_user_target(
+        self,
+        query: str,
+        function_analysis: Dict[str, Any],
+        conversation_state: ConversationState,
+        meta: Dict[str, Any],
+    ) -> None:
+        candidates = self._extract_user_candidates(meta, conversation_state)
+        if not candidates:
+            return
+
+        result = (function_analysis.get("result") or "").strip()
+        current_target = (function_analysis.get("target") or "").strip()
+
+        requires_target = result in RESULTS_REQUIRING_USER
+
+        if not requires_target and not result:
+            last_fa = conversation_state.last_function_analysis or {}
+            last_result = (last_fa.get("result") or "").strip()
+            if last_result in RESULTS_REQUIRING_USER:
+                requires_target = True
+                result = last_result
+                function_analysis["result"] = last_result
+
+        if not requires_target:
+            return
+
+        if current_target:
+            conversation_state.last_selected_user = current_target
+            return
+
+        candidate_name = self._extract_candidate_name(query)
+        if not candidate_name:
+            return
+
+        matched = None
+        llm_match, llm_confidence = await self._match_candidate_with_llm(candidate_name, candidates)
+        if llm_match and llm_match in candidates and llm_confidence >= 0.6:
+            matched = llm_match
+        if not matched:
+            matched = self._fuzzy_match_candidate(candidate_name, candidates)
+        if not matched:
+            return
+
+        function_analysis["target"] = matched
+        function_analysis["need_clarify"] = False
+        function_analysis["clarify_message"] = None
+        existing_confidence = function_analysis.get("confidence")
+        try:
+            numeric_conf = float(existing_confidence) if existing_confidence is not None else 0.0
+        except (TypeError, ValueError):
+            numeric_conf = 0.0
+        function_analysis["confidence"] = max(numeric_conf, 0.85)
+        conversation_state.last_selected_user = matched
+
+    def _extract_user_candidates(
+        self,
+        meta: Dict[str, Any],
+        conversation_state: ConversationState,
+    ) -> List[str]:
+        raw_candidates = meta.get("user_candidates")
+        candidates: List[str] = []
+        if isinstance(raw_candidates, str):
+            candidates = [item.strip() for item in raw_candidates.split(",") if item.strip()]
+        elif isinstance(raw_candidates, list):
+            candidates = [str(item).strip() for item in raw_candidates if str(item).strip()]
+
+        if not candidates:
+            candidates = conversation_state.user_candidates
+        if candidates and candidates != conversation_state.user_candidates:
+            conversation_state.user_candidates = candidates
+        return candidates
+
+    @staticmethod
+    def _extract_candidate_name(query: str) -> Optional[str]:
+        cleaned = sanitize_person_name(query) or query.strip()
+        if not cleaned:
+            return None
+        keywords = ["监测", "评估", "检测", "打开", "设置", "提醒", "帮我", "我要", "请", "联系"]
+        if any(keyword in query for keyword in keywords) and len(cleaned) < len(query.strip()):
+            return None
+        return cleaned
+
+    async def _match_candidate_with_llm(self, name: str, candidates: List[str]) -> tuple[Optional[str], float]:
+        if not name or not candidates:
+            return None, 0.0
+        system_prompt = "你是中文人名匹配助手，只从候选列表中选择最接近的名字。"
+        user_payload = {
+            "candidates": candidates,
+            "input": name,
+            "output_format": {"match": "候选名单中的名字", "confidence": "0-1之间的小数"},
+        }
+        messages = [
+            {
+                "role": "user",
+                "content": json.dumps(user_payload, ensure_ascii=False),
+            }
+        ]
+        try:
+            raw, parsed = await self._llm_client.chat(
+                system_prompt=system_prompt,
+                messages=messages,
+                response_format={"type": "json_object"},
+            )
+            _ = raw  # raw text暂时无需使用
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("user candidate LLM match failed", error=str(exc))
+            return None, 0.0
+
+        match_name = parsed.get("match") if isinstance(parsed, dict) else None
+        confidence = parsed.get("confidence") if isinstance(parsed, dict) else 0.0
+        try:
+            confidence_value = float(confidence) if confidence is not None else 0.0
+        except (TypeError, ValueError):
+            confidence_value = 0.0
+        return match_name, confidence_value
+
+    @staticmethod
+    def _fuzzy_match_candidate(name: str, candidates: List[str]) -> Optional[str]:
+        if not name or not candidates:
+            return None
+        best_match = None
+        best_score = -1.0
+        for candidate in candidates:
+            score = SequenceMatcher(None, name, candidate).ratio()
+            if score > best_score:
+                best_score = score
+                best_match = candidate
+        return best_match if best_match else None
 
     def _resolve_intent_code(
         self,

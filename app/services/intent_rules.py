@@ -69,6 +69,12 @@ _health_evaluation_keywords = [
     "健康状况评估",
     "健康情况评估",
     "健康状态评估",
+    "认知评估",
+    "认知测评",
+    "记忆评估",
+    "记忆测评",
+    "评估健康",
+    "功能评估",
 ]
 
 _health_evaluation_support_terms = [
@@ -375,8 +381,9 @@ def apply_health_rules(context: RuleContext) -> Optional[RuleResult]:
     if any(keyword in q for keyword in _health_evaluation_keywords) or (
         "评估" in q and any(term in q for term in _health_evaluation_support_terms)
     ):
-        person = extract_person_name(q)
-        return RuleResult(IntentCode.HEALTH_EVALUATION, "健康评估", target=person or "", confidence=0.95)
+        if not any(metric in q for metric in _health_metric_map.keys()):
+            person = extract_person_name(q)
+            return RuleResult(IntentCode.HEALTH_EVALUATION, "健康评估", target=person or "", confidence=0.95)
     if "健康监测" in q or "健康检测" in q:
         return RuleResult(IntentCode.HEALTH_MONITOR_GENERAL, "健康监测")
     for metric, (intent_code, result_text) in _health_metric_map.items():

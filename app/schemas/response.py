@@ -22,6 +22,7 @@ class CommandResponse(BaseModel):
     code: int = 200
     msg: str
     session_id: str = Field(alias="sessionId")
+    requires_selection: bool = Field(default=False, alias="requiresSelection")
     function_analysis: FunctionAnalysis
 
     model_config = {
@@ -31,9 +32,10 @@ class CommandResponse(BaseModel):
                 "code": 200,
                 "msg": "小雅：好的，我帮您设置今天下午6点的闹钟。",
                 "sessionId": "27e4b59c1fda42a4b403b5b7df09a36e",
+                "requiresSelection": False,
                 "function_analysis": {
                     "result": "新增闹钟",
-                    "target": "0d18h0m",
+                    "target": "2024-09-20T18:00:00+08:00",
                     "event": None,
                     "status": None,
                     "confidence": 0.92,

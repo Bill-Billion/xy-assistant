@@ -57,6 +57,7 @@ async def test_end_to_end_clarify_then_confirm(monkeypatch):
     )
     assert first_response.function_analysis.need_clarify is True
     assert "听戏曲还是听音乐" in (first_response.function_analysis.clarify_message or "")
+    assert first_response.requires_selection is True
 
     second_response = await service.handle_command(
         CommandRequest(sessionId="sess-1", query="听京剧吧")
@@ -64,6 +65,7 @@ async def test_end_to_end_clarify_then_confirm(monkeypatch):
     assert second_response.function_analysis.result == "小雅曲艺"
     assert second_response.function_analysis.target == "京剧"
     assert second_response.function_analysis.need_clarify is False
+    assert second_response.requires_selection is False
 
 
 @pytest.mark.asyncio
@@ -99,7 +101,8 @@ async def test_command_service_merges_advice_into_msg():
     assert response.function_analysis.advice is not None
     assert response.function_analysis.safety_notice is not None
     assert response.function_analysis.need_clarify is True
-    assert response.msg == "需要我为您提供更多健康建议还是帮您联系医生咨询呢？"
+    assert response.msg == "建议先适当休息，观察头晕情况。 小雅的建议仅供参考，如症状持续请及时咨询医生。 需要我为您提供更多健康建议还是帮您联系医生咨询呢？"
+    assert response.requires_selection is True
 
 
 @pytest.mark.asyncio
@@ -108,7 +111,7 @@ async def test_alarm_template_message(monkeypatch):
         {
             "intent_code": "ALARM_CREATE",
             "result": "新增闹钟",
-            "target": "0d18h0m",
+            "target": "2024-09-20T18:00:00+08:00",
             "event": None,
             "status": None,
             "confidence": 0.95,
@@ -134,6 +137,7 @@ async def test_alarm_template_message(monkeypatch):
         CommandRequest(sessionId="sess-alarm", query="帮我订个6点的闹钟")
     )
     assert response.msg == "好的，我已为您设置今天18:00的闹钟。"
+    assert response.requires_selection is False
 
 
 @pytest.mark.asyncio
@@ -170,7 +174,7 @@ async def test_alarm_tomorrow_morning_message(monkeypatch):
         {
             "intent_code": "ALARM_REMINDER",
             "result": "新增闹钟",
-            "target": "1d9h0m",
+            "target": "2024-09-21T09:00:00+08:00",
             "event": "吃药",
             "status": None,
             "confidence": 0.95,
@@ -196,3 +200,52 @@ async def test_alarm_tomorrow_morning_message(monkeypatch):
         CommandRequest(sessionId="sess-alarm-2", query="明早9点提醒我吃药")
     )
     assert response.msg == "好的，我已为您设置明天09:00的闹钟。 提醒事项：吃药。"
+    assert response.requires_selection is False
+
+
+@pytest.mark.asyncio
+async def test_user_candidate_resolution(monkeypatch):
+    fake_llm = SequencedFakeDoubao([
+        {
+            "intent_code": "HEALTH_MONITOR_GENERAL",
+            "result": "健康监测",
+            "target": "",
+            "confidence": 0.9,
+            "reply": "好的，我会为您安排健康监测。",
+        },
+        {
+            "intent_code": "UNKNOWN",
+            "confidence": 0.4,
+            "reply": "让我确认一下。",
+        },
+        {
+            "match": "小杨",
+            "confidence": 0.9,
+        },
+    ])
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    manager = ConversationManager()
+    settings = Settings(
+        DOUBAO_API_KEY="test",
+        DOUBAO_MODEL="test-model",
+        DOUBAO_API_URL="https://example.com",
+        DOUBAO_TIMEOUT=5.0,
+        CONFIDENCE_THRESHOLD=0.7,
+        ENVIRONMENT="test",
+    )
+    service = CommandService(classifier, manager, settings)
+
+    first = await service.handle_command(
+        CommandRequest(sessionId="sess-user", query="我要健康监测", user="小张,小杨")
+    )
+    assert first.function_analysis.result == "健康监测"
+    assert first.function_analysis.target == ""
+    assert first.requires_selection is True
+
+    second = await service.handle_command(
+        CommandRequest(sessionId="sess-user", query="晓阳", user="小张,小杨")
+    )
+    assert second.function_analysis.result == "健康监测"
+    assert second.function_analysis.target == "小杨"
+    assert second.msg == "好的，我已为小杨打开健康监测功能。"
+    assert second.requires_selection is False

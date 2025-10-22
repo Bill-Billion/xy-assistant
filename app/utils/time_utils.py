@@ -237,26 +237,28 @@ def derive_alarm_target(
     base_time: datetime,
     time_expr: Optional[TimeExpression] = None,
 ) -> tuple[str, Optional[str], Optional[str]]:
-    """格式化闹钟落地时间：返回 target（形如0d18h0m）、事件与频次。"""
+    """格式化闹钟落地时间：返回 ISO 8601 目标时间、事件与频次。"""
     if not time_expr:
         return "", extract_event(query), None
 
-    target = ""
+    target_iso = ""
+    alarm_dt: Optional[datetime] = None
+
     if time_expr.relative_delta:
-        delta = time_expr.relative_delta
-        hours = delta.seconds // 3600
-        minutes = (delta.seconds % 3600) // 60
-        target = f"+{delta.days}d{hours}h{minutes}m"
+        alarm_dt = base_time + time_expr.relative_delta
     elif time_expr.datetime_value:
-        dt = time_expr.datetime_value
-        if dt <= base_time:
-            dt += timedelta(days=1)
-        day_offset = (dt.date() - base_time.date()).days
-        target = f"{day_offset}d{dt.hour}h{dt.minute}m"
+        alarm_dt = time_expr.datetime_value
+        if alarm_dt <= base_time:
+            alarm_dt += timedelta(days=1)
+
+    if alarm_dt:
+        if not alarm_dt.tzinfo:
+            alarm_dt = alarm_dt.replace(tzinfo=EAST_EIGHT)
+        target_iso = alarm_dt.isoformat(timespec="seconds")
 
     status = time_expr.periodic_status
     event = extract_event(query)
-    return target, event, status
+    return target_iso, event, status
 
 
 def extract_event(text: str) -> Optional[str]:
@@ -305,18 +307,52 @@ def extract_medicine(text: str) -> Optional[str]:
 
 
 def describe_alarm_target(target: str, base_time: Optional[datetime] = None) -> str:
-    """将闹钟 target（0d18h0m / +0d0h10m）转换为易读的中文描述。"""
+    """将闹钟 target（ISO 8601）转换为易读的中文描述。"""
     if not target:
         return "指定时间"
 
     base_time = base_time or now_e8()
-    absolute_pattern = re.compile(r"(?P<days>\d+)d(?P<hours>\d+)h(?P<minutes>\d+)m")
-    relative_pattern = re.compile(r"\+(?P<days>\d+)d(?P<hours>\d+)h(?P<minutes>\d+)m")
 
-    if relative_match := relative_pattern.fullmatch(target):
-        days = int(relative_match.group("days"))
-        hours = int(relative_match.group("hours"))
-        minutes = int(relative_match.group("minutes"))
+    alarm_dt: Optional[datetime] = None
+    try:
+        alarm_dt = datetime.fromisoformat(target)
+    except ValueError:
+        pass
+
+    if alarm_dt is None:
+        # 兼容旧格式，避免历史数据导致异常
+        absolute_pattern = re.compile(r"(?P<days>\d+)d(?P<hours>\d+)h(?P<minutes>\d+)m")
+        relative_pattern = re.compile(r"\+(?P<days>\d+)d(?P<hours>\d+)h(?P<minutes>\d+)m")
+
+        if relative_match := relative_pattern.fullmatch(target):
+            days = int(relative_match.group("days"))
+            hours = int(relative_match.group("hours"))
+            minutes = int(relative_match.group("minutes"))
+            alarm_dt = base_time + timedelta(days=days, hours=hours, minutes=minutes)
+        elif absolute_match := absolute_pattern.fullmatch(target):
+            day_offset = int(absolute_match.group("days"))
+            hour = int(absolute_match.group("hours"))
+            minute = int(absolute_match.group("minutes"))
+            alarm_dt = base_time + timedelta(days=day_offset)
+            alarm_dt = alarm_dt.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+    if alarm_dt is None:
+        return target
+
+    if not alarm_dt.tzinfo:
+        alarm_dt = alarm_dt.replace(tzinfo=EAST_EIGHT)
+
+    delta = alarm_dt - base_time
+    if delta < timedelta():
+        delta = timedelta()
+
+    if delta <= timedelta(minutes=1):
+        return "立即"
+
+    if delta <= timedelta(hours=2):
+        days = delta.days
+        hours = delta.seconds // 3600
+        minutes = (delta.seconds % 3600) // 60
         parts: list[str] = []
         if days:
             parts.append(f"{days}天")
@@ -324,29 +360,16 @@ def describe_alarm_target(target: str, base_time: Optional[datetime] = None) -> 
             parts.append(f"{hours}小时")
         if minutes:
             parts.append(f"{minutes}分钟")
-        if not parts:
-            parts.append("0分钟")
         return "".join(parts) + "后"
 
-    absolute_match = absolute_pattern.fullmatch(target)
-    if not absolute_match:
-        return target
-
-    day_offset = int(absolute_match.group("days"))
-    hour = int(absolute_match.group("hours"))
-    minute = int(absolute_match.group("minutes"))
-
-    target_time = base_time + timedelta(days=day_offset)
-    target_time = target_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
-
-    if day_offset == 0:
+    if alarm_dt.date() == base_time.date():
         day_text = "今天"
-    elif day_offset == 1:
+    elif alarm_dt.date() == (base_time.date() + timedelta(days=1)):
         day_text = "明天"
-    elif day_offset == 2:
+    elif alarm_dt.date() == (base_time.date() + timedelta(days=2)):
         day_text = "后天"
     else:
-        day_text = target_time.strftime("%m月%d日")
+        day_text = alarm_dt.strftime("%m月%d日")
 
-    time_text = target_time.strftime("%H:%M")
+    time_text = alarm_dt.strftime("%H:%M")
     return f"{day_text}{time_text}"

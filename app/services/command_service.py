@@ -24,6 +24,8 @@ HEALTH_MONITOR_RESULTS = {
     "睡眠监测",
 }
 
+REQUIRES_SELECTION_RESULTS = HEALTH_MONITOR_RESULTS | {"健康评估", "健康画像"}
+
 
 def _render_template(function_analysis: FunctionAnalysis) -> str | None:
     """根据结果字段选择固定回复模板。返回 (模板文本, 可能的枚举意图)."""
@@ -63,9 +65,6 @@ def _compose_response_message(function_analysis: FunctionAnalysis, fallback: str
     根据分析结果动态拼接返回给前端的 msg。
     可执行意图优先使用模板，咨询类按“建议→安全提示→澄清”组合。
     """
-    if function_analysis.need_clarify and function_analysis.clarify_message:
-        return function_analysis.clarify_message.strip()
-
     parts: list[str] = []
     seen: set[str] = set()
 
@@ -79,15 +78,26 @@ def _compose_response_message(function_analysis: FunctionAnalysis, fallback: str
 
     template_text = _render_template(function_analysis)
 
+    if function_analysis.need_clarify and function_analysis.clarify_message:
+        add(template_text)
+        add(function_analysis.advice)
+        add(function_analysis.safety_notice)
+        add(function_analysis.clarify_message)
+        if not parts:
+            add(fallback)
+        return " ".join(parts)
+
     if template_text:
         add(template_text)
+        add(function_analysis.advice)
+        add(function_analysis.safety_notice)
     else:
         add(function_analysis.advice)
         add(function_analysis.safety_notice)
-        # add(fallback)
+        add(fallback)
 
     if not parts:
-        parts.append(fallback)
+        add(fallback)
 
     return " ".join(parts)
 
@@ -112,6 +122,23 @@ class CommandService:
         # 提取会话上下文，便于构造多轮提示词。
         context = self._conversation_manager.get_state(session_id)
 
+        candidate_users: list[str] = []
+        if payload.user:
+            candidate_users = [
+                name.strip()
+                for name in payload.user.split(",")
+                if isinstance(name, str) and name.strip()
+            ]
+            if candidate_users:
+                context.user_candidates = candidate_users
+                self._conversation_manager.set_user_candidates(session_id, candidate_users)
+
+        meta_payload = dict(payload.meta or {})
+        if candidate_users:
+            meta_payload["user_candidates"] = candidate_users
+        elif context.user_candidates:
+            meta_payload["user_candidates"] = context.user_candidates
+
         logger.info(
             "handling command",
             session_id=session_id,
@@ -123,7 +150,7 @@ class CommandService:
             classification = await self._intent_classifier.classify(
                 session_id=session_id,
                 query=payload.query,
-                meta=payload.meta or {},
+                meta=meta_payload,
                 conversation_state=context,
             )
             function_analysis = FunctionAnalysis.model_validate(classification.function_analysis)
@@ -159,11 +186,19 @@ class CommandService:
             response_message=response_message,
             function_analysis=function_analysis,
             raw_llm_output=raw_output,
+            user_candidates=context.user_candidates,
+        )
+
+        fa_result = (function_analysis.result or "").strip()
+        fa_target = (function_analysis.target or "").strip()
+        requires_selection = bool(function_analysis.need_clarify) or (
+            fa_result in REQUIRES_SELECTION_RESULTS and not fa_target
         )
 
         return CommandResponse(
             code=200,
             msg=response_message,
             sessionId=session_id,
+            requires_selection=requires_selection,
             function_analysis=function_analysis,
         )

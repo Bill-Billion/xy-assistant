@@ -52,7 +52,7 @@ def test_alarm_relative_time():
     result = run_rules("提醒我10分钟后煮饭")
     assert result
     assert result.intent_code == IntentCode.ALARM_REMINDER
-    assert result.target == "+0d0h10m"
+    assert result.target == "2024-09-20T10:10:00+08:00"
     assert result.event == "煮饭"
 
 
@@ -126,6 +126,20 @@ def test_health_evaluation_variation():
     assert result
     assert result.intent_code == IntentCode.HEALTH_EVALUATION
     assert result.result == "健康评估"
+
+
+def test_cognitive_evaluation():
+    result = run_rules("我要做认知评估")
+    assert result
+    assert result.intent_code == IntentCode.HEALTH_EVALUATION
+    assert result.result == "健康评估"
+
+
+def test_metric_keyword_takes_precedence_over_evaluation():
+    result = run_rules("我要做血压监测评估")
+    assert result
+    assert result.intent_code == IntentCode.HEALTH_MONITOR_BLOOD_PRESSURE
+    assert result.result == "血压监测"
 
 
 def test_close_music_command():

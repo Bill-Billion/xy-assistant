@@ -25,6 +25,8 @@ class ConversationState:
     clarify_message: Optional[str] = None
     last_function_analysis: Optional[dict[str, Any]] = None
     raw_llm_output: Optional[str] = None
+    user_candidates: List[str] = field(default_factory=list)
+    last_selected_user: Optional[str] = None
 
     def as_messages(self, limit: int = 6) -> list[dict[str, str]]:
         """以 OpenAI/豆包 兼容格式返回最近若干轮对话。"""
@@ -72,6 +74,9 @@ class ConversationManager:
         # pending_clarification 控制下一轮是否需要追问。
         state.pending_clarification = bool(fa_dict.get("need_clarify"))
         state.clarify_message = fa_dict.get("clarify_message")
+        target = fa_dict.get("target")
+        if isinstance(target, str) and target:
+            state.last_selected_user = target
         state.raw_llm_output = raw_llm_output
         self._store[session_id] = state
 
@@ -82,10 +87,20 @@ class ConversationManager:
         response_message: str,
         function_analysis: Any,
         raw_llm_output: Optional[str] = None,
+        user_candidates: Optional[List[str]] = None,
     ) -> None:
         """统一入口：先追加用户消息，再保存助手回复。"""
         self.record_user(session_id, query)
+        if user_candidates is not None:
+            state = self.get_state(session_id)
+            state.user_candidates = user_candidates
+            self._store[session_id] = state
         self.record_assistant(session_id, response_message, function_analysis, raw_llm_output)
+
+    def set_user_candidates(self, session_id: str, candidates: List[str]) -> None:
+        state = self.get_state(session_id)
+        state.user_candidates = candidates
+        self._store[session_id] = state
 
     def clear_session(self, session_id: str) -> None:
         """在需要时主动清理会话缓存。"""
