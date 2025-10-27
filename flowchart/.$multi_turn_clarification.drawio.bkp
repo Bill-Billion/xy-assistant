@@ -1,0 +1,117 @@
+<mxfile host="Electron" agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/28.1.2 Chrome/138.0.7204.243 Electron/37.4.0 Safari/537.36" version="28.1.2">
+  <diagram id="multi-turn" name="多轮澄清">
+    <mxGraphModel dx="925" dy="627" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1240" pageHeight="1754" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="start" value="开始" style="ellipse;whiteSpace=wrap;html=1;strokeColor=#1a73e8;fillColor=#e8f0fe;" parent="1" vertex="1">
+          <mxGeometry x="450" y="40" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="r1" value="接收当前轮请求" style="rounded=1;whiteSpace=wrap;html=1;strokeColor=#0b8043;fillColor=#e6f4ea;" parent="1" vertex="1">
+          <mxGeometry x="420" y="120" width="180" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="r2" value="加载历史上下文" style="rounded=1;whiteSpace=wrap;html=1;strokeColor=#0b8043;fillColor=#e6f4ea;" parent="1" vertex="1">
+          <mxGeometry x="400" y="200" width="220" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="r3" value="读取候选用户列表" style="rounded=1;whiteSpace=wrap;html=1;strokeColor=#0b8043;fillColor=#e6f4ea;" parent="1" vertex="1">
+          <mxGeometry x="400" y="280" width="220" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="c1" value="近似匹配功能名称" style="rounded=1;whiteSpace=wrap;html=1;strokeColor=#0b8043;fillColor=#e6f4ea;" parent="1" vertex="1">
+          <mxGeometry x="410" y="360" width="200" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="c2" value="调用豆包 LLM" style="rounded=1;whiteSpace=wrap;html=1;strokeColor=#0b8043;fillColor=#e6f4ea;" parent="1" vertex="1">
+          <mxGeometry x="660" y="120" width="180" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="c4" value="匹配候选对象" style="rounded=1;whiteSpace=wrap;html=1;strokeColor=#0b8043;fillColor=#e6f4ea;" parent="1" vertex="1">
+          <mxGeometry x="652.5" y="200" width="195" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="c5" value="LLM + 相似度兜底" style="rounded=1;whiteSpace=wrap;html=1;strokeColor=#0b8043;fillColor=#e6f4ea;" parent="1" vertex="1">
+          <mxGeometry x="642.5" y="300" width="215" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="d1" value="result 需目标且为空?" style="rhombus;whiteSpace=wrap;html=1;strokeColor=#f6bf26;fillColor=#fef6dd;" parent="1" vertex="1">
+          <mxGeometry x="645" y="390" width="210" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="d2" value="置信度 &lt; 阈值?" style="rhombus;whiteSpace=wrap;html=1;strokeColor=#f6bf26;fillColor=#fef6dd;" parent="1" vertex="1">
+          <mxGeometry x="665" y="520" width="180" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="q1" value="设置澄清规则" style="rounded=1;whiteSpace=wrap;html=1;strokeColor=#d93025;fillColor=#fce8e6;" parent="1" vertex="1">
+          <mxGeometry x="405" y="450" width="210" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="q2" value="生成澄清语句" style="rounded=1;whiteSpace=wrap;html=1;strokeColor=#d93025;fillColor=#fce8e6;" parent="1" vertex="1">
+          <mxGeometry x="405" y="530" width="210" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="q5" value="返回二次调用标志&lt;div&gt;便于前端调用&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;strokeColor=#d93025;fillColor=#fce8e6;" parent="1" vertex="1">
+          <mxGeometry x="400" y="620" width="220" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="loop" value="用户补充信息再次请求" style="rounded=1;whiteSpace=wrap;html=1;strokeColor=#1a73e8;fillColor=#e8f0fe;" parent="1" vertex="1">
+          <mxGeometry x="165" y="370" width="220" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="direct" value="输出判别结果" style="rounded=1;whiteSpace=wrap;html=1;strokeColor=#0b8043;fillColor=#e6f4ea;" parent="1" vertex="1">
+          <mxGeometry x="645" y="651.89" width="220" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="finish" value="结束" style="ellipse;whiteSpace=wrap;html=1;strokeColor=#1a73e8;fillColor=#e8f0fe;" parent="1" vertex="1">
+          <mxGeometry x="560" y="750" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="edge1" style="endArrow=block;html=1;strokeColor=#1a73e8;" parent="1" source="start" target="r1" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge2" style="endArrow=block;html=1;strokeColor=#1a73e8;" parent="1" source="r1" target="r2" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge3" style="endArrow=block;html=1;strokeColor=#1a73e8;" parent="1" source="r2" target="r3" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge4" style="endArrow=block;html=1;strokeColor=#1a73e8;" parent="1" source="r3" target="c1" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge5" style="endArrow=block;html=1;strokeColor=#1a73e8;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="c1" target="c2" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge7" style="endArrow=block;html=1;strokeColor=#1a73e8;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" parent="1" source="c2" target="c4" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="780" y="270" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edge7a" style="endArrow=block;html=1;strokeColor=#1a73e8;" parent="1" source="c4" target="c5" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge8" style="endArrow=block;html=1;strokeColor=#1a73e8;" parent="1" source="c5" target="d1" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge9" value="是" style="endArrow=block;html=1;strokeColor=#d93025;" parent="1" source="d1" target="q1" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge10" value="否" style="endArrow=block;html=1;strokeColor=#1a73e8;" parent="1" source="d1" target="d2" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge11" value="是" style="endArrow=block;html=1;strokeColor=#d93025;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.989;entryY=0.634;entryDx=0;entryDy=0;entryPerimeter=0;" parent="1" source="d2" target="q1" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="671.15969581749" y="473.4220532319391" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edge12" value="否" style="endArrow=block;html=1;strokeColor=#1a73e8;" parent="1" source="d2" target="direct" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge13" style="endArrow=block;html=1;strokeColor=#d93025;" parent="1" source="q1" target="q2" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge16" style="endArrow=block;html=1;strokeColor=#d93025;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" parent="1" source="q2" target="q5" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="510" y="770" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edge18" style="endArrow=block;html=1;strokeColor=#1a73e8;entryX=0.587;entryY=0.012;entryDx=0;entryDy=0;entryPerimeter=0;" parent="1" source="direct" target="finish" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="755" y="736.8899999999999" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edge22" style="dashed=1;endArrow=block;html=1;strokeColor=#1a73e8;exitX=0;exitY=0.5;exitDx=0;exitDy=0;" parent="1" source="q5" target="loop" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge23" style="dashed=1;endArrow=block;html=1;strokeColor=#1a73e8;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="loop" target="r1" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

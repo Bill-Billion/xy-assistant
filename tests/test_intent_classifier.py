@@ -50,7 +50,7 @@ async def test_classifier_uses_rule_for_alarm():
         conversation_state=state,
     )
     assert result.function_analysis["result"] == "新增闹钟"
-    assert result.function_analysis["target"] == "2024-09-20T18:00:00+08:00"
+    assert result.function_analysis["target"] == "2024-09-20 18-00-00"
     assert result.function_analysis["need_clarify"] is False
     assert result.function_analysis["advice"] is None
 

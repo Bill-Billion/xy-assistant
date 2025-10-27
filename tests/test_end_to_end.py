@@ -6,6 +6,7 @@ from app.schemas.request import CommandRequest
 from app.services.command_service import CommandService
 from app.services.conversation import ConversationManager
 from app.services.intent_classifier import IntentClassifier
+from app.utils.time_utils import EAST_EIGHT
 
 
 class SequencedFakeDoubao:
@@ -111,7 +112,7 @@ async def test_alarm_template_message(monkeypatch):
         {
             "intent_code": "ALARM_CREATE",
             "result": "新增闹钟",
-            "target": "2024-09-20T18:00:00+08:00",
+            "target": "2024-09-20 18-00-00",
             "event": None,
             "status": None,
             "confidence": 0.95,
@@ -174,7 +175,7 @@ async def test_alarm_tomorrow_morning_message(monkeypatch):
         {
             "intent_code": "ALARM_REMINDER",
             "result": "新增闹钟",
-            "target": "2024-09-21T09:00:00+08:00",
+            "target": "2024-09-21 09-00-00",
             "event": "吃药",
             "status": None,
             "confidence": 0.95,
@@ -249,3 +250,109 @@ async def test_user_candidate_resolution(monkeypatch):
     assert second.function_analysis.target == "小杨"
     assert second.msg == "好的，我已为小杨打开健康监测功能。"
     assert second.requires_selection is False
+
+
+@pytest.mark.asyncio
+async def test_education_target_refinement(monkeypatch):
+    fake_llm = SequencedFakeDoubao([
+        {
+            "intent_code": "EDUCATION_GENERAL",
+            "result": "小雅教育",
+            "target": "习声乐戏曲",
+            "confidence": 0.85,
+            "reply": "没问题，我来安排学习课程。",
+        }
+    ])
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    manager = ConversationManager()
+    settings = Settings(
+        DOUBAO_API_KEY="test",
+        DOUBAO_MODEL="test-model",
+        DOUBAO_API_URL="https://example.com",
+        DOUBAO_TIMEOUT=5.0,
+        CONFIDENCE_THRESHOLD=0.7,
+        ENVIRONMENT="test",
+    )
+    service = CommandService(classifier, manager, settings)
+
+    response = await service.handle_command(
+        CommandRequest(sessionId="sess-edu", query="我想学习声乐戏曲。")
+    )
+
+    assert response.function_analysis.result == "小雅教育"
+    assert response.function_analysis.target == "声乐戏曲"
+    assert "target_calibrated" in (response.function_analysis.reasoning or "")
+
+
+@pytest.mark.asyncio
+async def test_education_target_with_reduplication(monkeypatch):
+    fake_llm = SequencedFakeDoubao([
+        {
+            "intent_code": "EDUCATION_GENERAL",
+            "result": "小雅教育",
+            "target": "",
+            "confidence": 0.88,
+            "reply": "好的，我会安排学习课程。",
+        }
+    ])
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    manager = ConversationManager()
+    settings = Settings(
+        DOUBAO_API_KEY="test",
+        DOUBAO_MODEL="test-model",
+        DOUBAO_API_URL="https://example.com",
+        DOUBAO_TIMEOUT=5.0,
+        CONFIDENCE_THRESHOLD=0.7,
+        ENVIRONMENT="test",
+    )
+    service = CommandService(classifier, manager, settings)
+
+    response = await service.handle_command(
+        CommandRequest(sessionId="sess-edu-2", query="我想学学声乐戏曲。")
+    )
+
+    assert response.function_analysis.result == "小雅教育"
+    assert response.function_analysis.target == "声乐戏曲"
+    assert "target_calibrated" in (response.function_analysis.reasoning or "")
+
+
+@pytest.mark.asyncio
+async def test_alarm_target_llm_fallback(monkeypatch):
+    fake_llm = SequencedFakeDoubao([
+        {
+            "intent_code": "ALARM_REMINDER",
+            "result": "新增闹钟",
+            "target": "",
+            "event": None,
+            "status": None,
+            "confidence": 0.8,
+            "reply": "好的",
+        },
+        {
+            "days": 0,
+            "hours": 0,
+            "minutes": 10,
+            "seconds": 0,
+            "event": "吃药",
+            "confidence": 0.92,
+        },
+    ])
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    manager = ConversationManager()
+    settings = Settings(
+        DOUBAO_API_KEY="test",
+        DOUBAO_MODEL="test-model",
+        DOUBAO_API_URL="https://example.com",
+        DOUBAO_TIMEOUT=5.0,
+        CONFIDENCE_THRESHOLD=0.7,
+        ENVIRONMENT="test",
+    )
+    service = CommandService(classifier, manager, settings)
+
+    response = await service.handle_command(
+        CommandRequest(sessionId="sess-alarm-llm", query="十分钟之后提醒我吃药")
+    )
+
+    assert response.function_analysis.result == "新增闹钟"
+    assert response.function_analysis.target
+    assert response.function_analysis.event == "吃药"

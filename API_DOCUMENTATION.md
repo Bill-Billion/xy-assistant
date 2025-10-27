@@ -76,7 +76,7 @@ curl -X GET http://localhost:8001/health
 | 字段 | 类型 | 描述 | 示例 |
 |------|------|------|------|
 | result | string | 识别的功能类型 | "新增闹钟", "今天天气", "血压监测" |
-| target | string | 目标参数 | "2024-09-20T18:00:00+08:00", "今天", "爸爸" |
+| target | string | 目标参数 | "2024-09-20 18-00-00", "今天", "爸爸" |
 | event | string | 事件描述 | "煮饭", null |
 | status | string | 状态信息 | "每天早上", null |
 | confidence | float | 置信度 (0.0-1.0) | 0.95 |
@@ -110,7 +110,7 @@ curl -X POST http://localhost:8001/api/command \
   "requiresSelection": false,
   "function_analysis": {
     "result": "新增闹钟",
-    "target": "2024-09-20T18:00:00+08:00",
+    "target": "2024-09-20 18-00-00",
     "event": null,
     "status": null,
     "confidence": 0.95,
@@ -142,7 +142,7 @@ curl -X POST http://localhost:8001/api/command \
   "requiresSelection": false,
   "function_analysis": {
     "result": "新增闹钟",
-    "target": "2024-09-20T10:10:00+08:00",
+    "target": "2024-09-20 10-10-00",
     "event": "煮饭",
     "status": null,
     "confidence": 0.95,

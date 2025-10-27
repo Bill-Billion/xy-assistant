@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import timedelta
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional
 
@@ -11,8 +12,9 @@ from app.services.conversation import ConversationState
 from app.services.intent_definitions import INTENT_DEFINITIONS, IntentCode
 from app.services.intent_rules import RuleResult, run_rules
 from app.services.llm_client import DoubaoClient
+from app.services.target_refiner import TargetRefiner
 from app.services.prompt_templates import build_system_prompt, get_allowed_results
-from app.utils.time_utils import now_e8, sanitize_person_name
+from app.utils.time_utils import EAST_EIGHT, now_e8, sanitize_person_name
 
 
 
@@ -92,6 +94,7 @@ class IntentClassifier:
         self._confidence_threshold = confidence_threshold
         self._system_prompt = build_system_prompt()
         self._allowed_results = get_allowed_results()
+        self._target_refiner = TargetRefiner(llm_client)
 
     async def classify(
         self,
@@ -125,12 +128,25 @@ class IntentClassifier:
         except Exception as exc:  # noqa: BLE001
             logger.exception("LLM 调用失败，采用规则兜底", error=str(exc))
 
-        function_analysis = self._merge_results(rule_result, llm_parsed, query)
+        function_analysis, intent_code = self._merge_results(rule_result, llm_parsed, query)
         await self._resolve_user_target(
             query=query,
             function_analysis=function_analysis,
             conversation_state=conversation_state,
             meta=meta,
+        )
+        await self._refine_content_target(
+            intent_code=intent_code,
+            query=query,
+            function_analysis=function_analysis,
+        )
+        await self._ensure_alarm_target(
+            query=query,
+            function_analysis=function_analysis,
+        )
+        await self._ensure_alarm_target(
+            query=query,
+            function_analysis=function_analysis,
         )
 
         reply_message = (
@@ -189,7 +205,7 @@ class IntentClassifier:
         rule_result: Optional[RuleResult],
         llm_parsed: Dict[str, Any],
         query: str,
-    ) -> Dict[str, Any]:
+    ) -> tuple[Dict[str, Any], IntentCode]:
         """合并规则结果与大模型 JSON，并执行后置校验与补全。"""
         llm_parsed = llm_parsed or {}
         raw_result = llm_parsed.get("result")
@@ -302,7 +318,7 @@ class IntentClassifier:
             "safety_notice": safety_notice or None,
         }
 
-        return function_analysis
+        return function_analysis, intent_code
 
     async def _resolve_user_target(
         self,
@@ -433,6 +449,131 @@ class IntentClassifier:
                 best_score = score
                 best_match = candidate
         return best_match if best_match else None
+
+    async def _refine_content_target(
+        self,
+        intent_code: IntentCode,
+        query: str,
+        function_analysis: Dict[str, Any],
+    ) -> None:
+        if not self._target_refiner.supports(intent_code):
+            return
+        initial_target = (function_analysis.get("target") or "").strip()
+        result = (function_analysis.get("result") or "").strip()
+        if not result:
+            return
+
+        refinement = await self._target_refiner.refine(
+            intent_code=intent_code,
+            query=query,
+            initial_target=initial_target,
+        )
+        refined_target = refinement.target
+        if not refined_target or refined_target == initial_target:
+            return
+
+        function_analysis["target"] = refined_target
+        existing_confidence = function_analysis.get("confidence")
+        try:
+            numeric_conf = float(existing_confidence) if existing_confidence is not None else 0.0
+        except (TypeError, ValueError):
+            numeric_conf = 0.0
+        boost = 0.9 if refinement.source == "llm" else 0.85
+        function_analysis["confidence"] = max(numeric_conf, boost)
+
+        marker = f"target_calibrated={refinement.source}:{refined_target}"
+        reasoning = function_analysis.get("reasoning")
+        function_analysis["reasoning"] = f"{reasoning}；{marker}" if reasoning else marker
+
+    async def _ensure_alarm_target(
+        self,
+        query: str,
+        function_analysis: Dict[str, Any],
+    ) -> None:
+        if (function_analysis.get("result") or "").strip() != "新增闹钟":
+            return
+        if (function_analysis.get("target") or "").strip():
+            return
+        if not self._llm_client:
+            return
+
+        fallback_target, fallback_event = await self._parse_alarm_with_llm(query)
+        if not fallback_target:
+            return
+
+        function_analysis["target"] = fallback_target
+        if fallback_event and not function_analysis.get("event"):
+            function_analysis["event"] = fallback_event
+
+        existing_confidence = function_analysis.get("confidence")
+        try:
+            numeric_conf = float(existing_confidence) if existing_confidence is not None else 0.0
+        except (TypeError, ValueError):
+            numeric_conf = 0.0
+        function_analysis["confidence"] = max(numeric_conf, 0.75)
+
+        marker = "alarm_target=llm"
+        reasoning = function_analysis.get("reasoning")
+        function_analysis["reasoning"] = f"{reasoning}；{marker}" if reasoning else marker
+
+    async def _parse_alarm_with_llm(self, query: str) -> tuple[Optional[str], Optional[str]]:
+        base_time = now_e8()
+        payload = {
+            "current_time": base_time.strftime("%Y-%m-%d %H:%M:%S%z"),
+            "query": query,
+            "instruction": (
+                "解析提醒中的相对时间，返回 JSON："
+                '{"days":0,"hours":0,"minutes":10,"seconds":0,"event":"事件","confidence":0.9}。'
+                "若无法确定，返回 {\"confidence\":0}。"
+            ),
+        }
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是时间解析助手，根据当前时间和用户指令，输出提醒的时间间隔（天/小时/分钟/秒）"
+                    "并提炼提醒事项 event，只能输出 JSON。"
+                ),
+            },
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ]
+
+        try:
+            _, parsed = await self._llm_client.chat(
+                system_prompt="",
+                messages=messages,
+                response_format={"type": "json_object"},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("alarm llm parse failed", error=str(exc))
+            return None, None
+
+        if not isinstance(parsed, dict):
+            return None, None
+
+        try:
+            confidence = float(parsed.get("confidence", 0) or 0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if confidence < 0.6:
+            return None, None
+
+        try:
+            days = float(parsed.get("days", 0) or 0)
+            hours = float(parsed.get("hours", 0) or 0)
+            minutes = float(parsed.get("minutes", 0) or 0)
+            seconds = float(parsed.get("seconds", 0) or 0)
+        except (TypeError, ValueError):
+            return None, None
+
+        delta = timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
+        if delta <= timedelta(0) or delta > timedelta(days=365 * 5):
+            return None, None
+
+        reminder_time = (base_time + delta).astimezone(EAST_EIGHT)
+        target = reminder_time.strftime("%Y-%m-%d %H-%M-%S")
+        event = (parsed.get("event") or "").strip() or None
+        return target, event
 
     def _resolve_intent_code(
         self,

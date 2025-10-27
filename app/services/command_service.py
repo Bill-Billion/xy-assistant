@@ -66,38 +66,42 @@ def _compose_response_message(function_analysis: FunctionAnalysis, fallback: str
     可执行意图优先使用模板，咨询类按“建议→安全提示→澄清”组合。
     """
     parts: list[str] = []
-    seen: set[str] = set()
 
-    def add(text: str | None) -> None:
-        if not text:
+    def add_unique(text: str | None) -> None:
+        candidate = (text or "").strip()
+        if not candidate:
             return
-        candidate = text.strip()
-        if candidate and candidate not in seen:
-            parts.append(candidate)
-            seen.add(candidate)
+        for existing in parts:
+            if candidate in existing or existing in candidate:
+                return
+        parts.append(candidate)
 
     template_text = _render_template(function_analysis)
+    advice = (function_analysis.advice or "").strip()
+    safety = (function_analysis.safety_notice or "").strip()
+    clarify = (function_analysis.clarify_message or "").strip()
+    fallback_text = fallback.strip()
 
-    if function_analysis.need_clarify and function_analysis.clarify_message:
-        add(template_text)
-        add(function_analysis.advice)
-        add(function_analysis.safety_notice)
-        add(function_analysis.clarify_message)
+    if function_analysis.need_clarify and clarify:
+        add_unique(template_text)
+        add_unique(advice)
+        add_unique(safety)
+        add_unique(clarify)
         if not parts:
-            add(fallback)
+            add_unique(fallback_text)
         return " ".join(parts)
 
     if template_text:
-        add(template_text)
-        add(function_analysis.advice)
-        add(function_analysis.safety_notice)
+        add_unique(template_text)
+        add_unique(advice)
+        add_unique(safety)
     else:
-        add(function_analysis.advice)
-        add(function_analysis.safety_notice)
-        add(fallback)
+        add_unique(fallback_text)
+        add_unique(advice)
+        add_unique(safety)
 
     if not parts:
-        add(fallback)
+        add_unique(fallback_text or fallback)
 
     return " ".join(parts)
 

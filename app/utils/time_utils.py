@@ -5,6 +5,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional
 
+try:
+    import cn2an
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    cn2an = None
+
 import dateparser
 from zoneinfo import ZoneInfo
 
@@ -107,7 +112,11 @@ class TimeExpression:
 
 
 _relative_pattern = re.compile(
-    r"(?:(?P<days>\d+)天)?(?:(?P<hours>\d+)小时)?(?:(?P<minutes>\d+)分钟)?后"
+    r"(?:(?P<days>\d+(?:\.\d+)?)(?:天|日))?"
+    r"(?:(?P<hours>\d+(?:\.\d+)?)(?:小时|个小时|时))?"
+    r"(?:(?P<minutes>\d+(?:\.\d+)?)(?:分钟|分))?"
+    r"(?:(?P<seconds>\d+(?:\.\d+)?)(?:秒钟?|秒))?"
+    r"(?:后)?"
 )
 
 _periodic_pattern = re.compile(r"每周[一二三四五六日天]|每天|每日|每晚|每早")
@@ -151,12 +160,130 @@ _TIME_REPLACEMENTS = [
     ("明儿", "明天"),
 ]
 
+_TIME_SUFFIX_MAP = {
+    "之后": "后",
+    "过后": "后",
+    "以后": "后",
+    "过一会儿": "后",
+}
+
+_HALF_PATTERNS = [
+    (re.compile(r"([零〇一二三四五六七八九十百千万两兩\d]+)个?小时半"), "小时"),
+    (re.compile(r"([零〇一二三四五六七八九十百千万两兩\d]+)个?天半"), "天"),
+]
+
+_CHINESE_TIME_PATTERN = re.compile(
+    r"(?P<num>半个?|[零〇一二三四五六七八九十百千万两兩点\.\d]+)(?P<unit>天|日|小时|个小时|时|分钟|分|秒钟?|秒)"
+)
+
 
 def _normalize_time_phrases(text: str) -> str:
     normalized = text
     for original, replacement in _TIME_REPLACEMENTS:
         normalized = normalized.replace(original, replacement)
+    for original, replacement in _TIME_SUFFIX_MAP.items():
+        normalized = normalized.replace(original, replacement)
+    normalized = _replace_half_patterns(normalized)
+    normalized = _replace_chinese_numerals(normalized)
     return normalized
+
+
+def _replace_half_patterns(text: str) -> str:
+    def _convert(match: re.Match[str], unit: str) -> str:
+        raw = match.group(1)
+        value = _parse_chinese_number(raw)
+        if value is None:
+            return match.group(0)
+        value += 0.5
+        return _format_unit(value, unit)
+
+    result = text
+    for pattern, unit in _HALF_PATTERNS:
+        result = pattern.sub(lambda m, u=unit: _convert(m, u), result)
+
+    # 单独处理“半小时”“半天”“半分钟”“半秒”
+    result = re.sub(r"半个?小时", lambda _: _format_unit(0.5, "小时"), result)
+    result = re.sub(r"半个?天", lambda _: _format_unit(0.5, "天"), result)
+    result = re.sub(r"半个?分钟", lambda _: _format_unit(0.5, "分钟"), result)
+    result = re.sub(r"半个?秒", lambda _: _format_unit(0.5, "秒"), result)
+    return result
+
+
+def _replace_chinese_numerals(text: str) -> str:
+    def repl(match: re.Match[str]) -> str:
+        num_str = match.group("num")
+        unit = match.group("unit")
+        value = _parse_chinese_number(num_str)
+        if value is None:
+            return match.group(0)
+
+        if unit in {"刻钟"}:
+            minutes = value * 15
+            return _format_unit(minutes, "分钟")
+        if unit in {"分钟", "分"}:
+            return _format_unit(value, "分钟")
+        if unit in {"秒", "秒钟"}:
+            return _format_unit(value, "秒")
+        if unit in {"小时", "个小时", "时"}:
+            if float(value).is_integer():
+                return _format_unit(value, "小时")
+            minutes = value * 60
+            return _format_unit(minutes, "分钟")
+        if unit in {"天", "日"}:
+            return _format_unit(value, "天")
+        return match.group(0)
+
+    return _CHINESE_TIME_PATTERN.sub(repl, text)
+
+
+def _parse_chinese_number(raw: str) -> Optional[float]:
+    raw = raw.strip()
+    if not raw:
+        return None
+    if raw in {"半", "半个"}:
+        return 0.5
+    if cn2an is not None:
+        try:
+            return float(cn2an.cn2an(raw, "smart"))
+        except (ValueError, TypeError):
+            pass
+
+    fallback_map = {
+        "零": 0,
+        "〇": 0,
+        "一": 1,
+        "二": 2,
+        "两": 2,
+        "兩": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+        "十": 10,
+    }
+    if raw in fallback_map:
+        return float(fallback_map[raw])
+
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def _format_unit(value: float, unit: str) -> str:
+    if unit in {"分钟", "秒"}:
+        total = value
+        if abs(total - round(total)) < 1e-6:
+            total = int(round(total))
+        return f"{total}{unit}"
+    if unit in {"小时", "天"}:
+        if abs(value - round(value)) < 1e-6:
+            value = int(round(value))
+        return f"{value}{unit}"
+    return f"{value}{unit}"
 
 
 def extract_time_expression(text: str, base_time: Optional[datetime] = None) -> Optional[TimeExpression]:
@@ -165,13 +292,17 @@ def extract_time_expression(text: str, base_time: Optional[datetime] = None) -> 
     cleaned = _normalize_time_phrases(text.strip())
     expr = TimeExpression(raw_text=None)
 
-    rel_match = _relative_pattern.search(cleaned)
-    if rel_match:
-        days = int(rel_match.group("days") or 0)
-        hours = int(rel_match.group("hours") or 0)
-        minutes = int(rel_match.group("minutes") or 0)
-        expr.relative_delta = timedelta(days=days, hours=hours, minutes=minutes)
-        expr.raw_text = rel_match.group(0)
+    for rel_match in _relative_pattern.finditer(cleaned):
+        if not rel_match.group(0):
+            continue
+        days = float(rel_match.group("days") or 0)
+        hours = float(rel_match.group("hours") or 0)
+        minutes = float(rel_match.group("minutes") or 0)
+        seconds = float(rel_match.group("seconds") or 0)
+        if any([days, hours, minutes, seconds]):
+            expr.relative_delta = timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
+            expr.raw_text = rel_match.group(0)
+            break
 
     periodic_match = _periodic_pattern.search(cleaned)
     if periodic_match:
@@ -254,7 +385,8 @@ def derive_alarm_target(
     if alarm_dt:
         if not alarm_dt.tzinfo:
             alarm_dt = alarm_dt.replace(tzinfo=EAST_EIGHT)
-        target_iso = alarm_dt.isoformat(timespec="seconds")
+        alarm_dt = alarm_dt.astimezone(EAST_EIGHT)
+        target_iso = alarm_dt.strftime("%Y-%m-%d %H-%M-%S")
 
     status = time_expr.periodic_status
     event = extract_event(query)
@@ -315,9 +447,15 @@ def describe_alarm_target(target: str, base_time: Optional[datetime] = None) -> 
 
     alarm_dt: Optional[datetime] = None
     try:
-        alarm_dt = datetime.fromisoformat(target)
+        alarm_dt = datetime.strptime(target, "%Y-%m-%d %H-%M-%S").replace(tzinfo=EAST_EIGHT)
     except ValueError:
-        pass
+        alarm_dt = None
+
+    if alarm_dt is None:
+        try:
+            alarm_dt = datetime.fromisoformat(target)
+        except ValueError:
+            alarm_dt = None
 
     if alarm_dt is None:
         # 兼容旧格式，避免历史数据导致异常

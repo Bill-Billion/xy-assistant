@@ -1,0 +1,65 @@
+<mxfile host="Electron" agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/28.1.2 Chrome/138.0.7204.243 Electron/37.4.0 Safari/537.36" version="28.1.2">
+  <diagram id="system-arch" name="系统结构图">
+    <mxGraphModel dx="1018" dy="690" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1240" pageHeight="1754" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="prompt_engineering" value="Prompt 管理前端" style="rounded=1;whiteSpace=wrap;html=1;strokeColor=#1a73e8;fillColor=#e8f0fe;fontSize=17;" parent="1" vertex="1">
+          <mxGeometry x="45" y="140" width="200" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="intent_design" value="意图定义 &amp;amp; 规则库" style="rounded=1;whiteSpace=wrap;html=1;strokeColor=#1a73e8;fillColor=#e8f0fe;fontSize=17;" parent="1" vertex="1">
+          <mxGeometry x="45" y="260" width="200" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="prompt_builder" value="系统提示词构建" style="rounded=1;whiteSpace=wrap;html=1;strokeColor=#0b8043;fillColor=#e6f4ea;fontSize=17;" parent="1" vertex="1">
+          <mxGeometry x="315" y="200" width="220" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="command_entry" value="命令服务入口" style="rounded=1;whiteSpace=wrap;html=1;strokeColor=#0b8043;fillColor=#e6f4ea;fontSize=17;" parent="1" vertex="1">
+          <mxGeometry x="315" y="360" width="220" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="user_request" value="用户请求 &amp;amp; 会话上下文" style="rounded=1;whiteSpace=wrap;html=1;strokeColor=#1a73e8;fillColor=#e8f0fe;fontSize=17;" parent="1" vertex="1">
+          <mxGeometry x="45" y="360" width="220" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="classifier" value="混合意图分类器" style="rounded=1;whiteSpace=wrap;html=1;strokeColor=#0b8043;fillColor=#e6f4ea;fontSize=17;" parent="1" vertex="1">
+          <mxGeometry x="585" y="260" width="220" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="llm_service" value="豆包 LLM 推理服务" style="rounded=1;whiteSpace=wrap;html=1;strokeColor=#0b8043;fillColor=#e6f4ea;fontSize=17;" parent="1" vertex="1">
+          <mxGeometry x="855" y="190" width="220" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="response_pipeline" value="响应消息 &amp;amp; 会话更新" style="rounded=1;whiteSpace=wrap;html=1;strokeColor=#d93025;fillColor=#fce8e6;fontSize=17;" parent="1" vertex="1">
+          <mxGeometry x="815" y="360" width="220" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="api_output" value="API / 前端调用控制设备" style="shape=cylinder;whiteSpace=wrap;html=1;strokeColor=#1a73e8;fillColor=#e8f0fe;fontSize=17;" parent="1" vertex="1">
+          <mxGeometry x="510" y="450" width="140" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="edge1" style="endArrow=block;html=1;strokeColor=#1a73e8;fontSize=17;" parent="1" source="prompt_engineering" target="prompt_builder" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge2" style="endArrow=block;html=1;strokeColor=#1a73e8;fontSize=17;" parent="1" source="intent_design" target="prompt_builder" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge3" value="系统提示词" style="endArrow=block;html=1;strokeColor=#0b8043;fontSize=17;" parent="1" source="prompt_builder" target="classifier" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="565" y="240" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edge4" style="endArrow=block;html=1;strokeColor=#0b8043;fontSize=17;" parent="1" source="user_request" target="command_entry" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge5" style="endArrow=block;html=1;strokeColor=#0b8043;fontSize=17;" parent="1" source="command_entry" target="classifier" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge6" value="推理调用" style="endArrow=block;html=1;strokeColor=#0b8043;fontSize=17;" parent="1" source="classifier" target="llm_service" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge8" style="endArrow=block;html=1;strokeColor=#d93025;exitX=0.5;exitY=1;exitDx=0;exitDy=0;fontSize=17;" parent="1" source="llm_service" target="response_pipeline" edge="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="985" y="360" as="sourcePoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edge9" style="endArrow=block;html=1;strokeColor=#d93025;fontSize=17;" parent="1" source="response_pipeline" target="api_output" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

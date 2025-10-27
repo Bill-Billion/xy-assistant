@@ -1,0 +1,20 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  font-family: 'Inter var', 'Helvetica Neue', system-ui, sans-serif;
+  background-color: #ffffff;
+}
+
+body {
+  @apply min-h-screen bg-white text-[#1f2a44] antialiased;
+  background-image: radial-gradient(circle at top left, rgba(76, 99, 182, 0.18), transparent 60%),
+    radial-gradient(circle at top right, rgba(91, 122, 200, 0.12), transparent 55%),
+    radial-gradient(circle at bottom left, rgba(161, 174, 209, 0.15), transparent 60%);
+}
+
+#root {
+  @apply min-h-screen;
+}

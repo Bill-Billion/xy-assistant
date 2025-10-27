@@ -52,7 +52,7 @@ def test_alarm_relative_time():
     result = run_rules("提醒我10分钟后煮饭")
     assert result
     assert result.intent_code == IntentCode.ALARM_REMINDER
-    assert result.target == "2024-09-20T10:10:00+08:00"
+    assert result.target == "2024-09-20 10-10-00"
     assert result.event == "煮饭"
 
 
