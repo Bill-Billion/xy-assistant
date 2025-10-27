@@ -16,18 +16,22 @@ COPY pyproject.toml ./
 # 安装Python依赖到虚拟环境
 RUN python -m venv /venv
 ENV PATH="/venv/bin:$PATH"
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
-RUN pip install --no-cache-dir \
-    fastapi>=0.110 \
-    uvicorn[standard]>=0.27 \
-    httpx>=0.27 \
-    python-dotenv>=1.0 \
-    pydantic-settings>=2.2 \
-    dateparser>=1.2 \
-    lunar-python>=1.0 \
-    cachetools>=5.3 \
-    pydantic>=2.6 \
-    loguru>=0.7
+ENV PIP_NO_CACHE_DIR=1
+RUN pip install --upgrade pip setuptools wheel \
+    && pip install numpy>=1.26 cython>=3.0 \
+    && pip install \
+        fastapi>=0.110 \
+        uvicorn[standard]>=0.27 \
+        httpx>=0.27 \
+        python-dotenv>=1.0 \
+        pydantic-settings>=2.2 \
+        dateparser>=1.2 \
+        lunar-python>=1.0 \
+        cachetools>=5.3 \
+        pydantic>=2.6 \
+        loguru>=0.7 \
+        cn2an>=0.5.21 \
+    && pip install --no-build-isolation pkuseg>=0.0.25
 
 # 运行阶段：精简镜像
 FROM python:3.11-slim AS runtime

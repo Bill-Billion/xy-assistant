@@ -29,4 +29,4 @@
 ## 使用建议
 - 若需进一步提升时间解析，先扩展 `_normalize_time_phrases`/`_relative_pattern`，只在明确失败时调用 LLM。
 - 新增业务意图时更新：`intent_definitions.py`、`intent_rules.py`、`prompt_templates.py`、必要的测试用例。
-- Docker 打包流程：`DOCKER_BUILDKIT=1 docker build --platform linux/amd64 -t xy-assistant:latest .` + `docker save`，记得先备份旧 tar。 
+- Docker 打包流程：先 `./deploy.sh build`（多平台构建），再 `./deploy.sh save`；脚本会自动备份旧版 tar 并导出新的 `xy-assistant-latest.tar`。 

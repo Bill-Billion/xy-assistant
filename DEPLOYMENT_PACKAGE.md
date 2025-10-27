@@ -2,7 +2,7 @@
 
 ## 📦 包含文件
 
-- `xy-assistant-latest.tar` - Docker镜像包 (192MB)
+- `xy-assistant-latest.tar` - Docker镜像包 (463MB)
 - `docker-compose.yml` - 服务编排文件
 - `.env.docker` - 环境配置文件
 - `deploy/server-deploy.sh` - 自动部署脚本
@@ -42,8 +42,8 @@ curl http://localhost:8000/health
 
 - **镜像名称**: xy-assistant:latest
 - **架构**: linux/amd64 (x86_64)
-- **大小**: 193MB (运行时)
-- **tar包大小**: 192MB
+- **大小**: 475MB (运行时)
+- **tar包大小**: 463MB
 - **基础镜像**: python:3.11-slim
 
 ## 🔧 服务配置
@@ -85,6 +85,6 @@ docker images | grep xy-assistant
 ```
 
 ---
-**生成时间**: 2025-09-29  
+**生成时间**: 2025-10-27  
 **镜像版本**: latest  
 **包含豆包API配置**: ✅

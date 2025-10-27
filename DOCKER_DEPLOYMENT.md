@@ -46,7 +46,7 @@ vim .env.docker  # 修改为生产环境配置
 
 # 或分步执行
 ./deploy.sh build    # 构建镜像
-./deploy.sh save     # 保存镜像
+./deploy.sh save     # 保存镜像（会自动备份旧版 tar）
 ./deploy.sh upload   # 上传到服务器
 ```
 

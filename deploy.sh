@@ -30,6 +30,27 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+# 确保 buildx 构建器可用
+ensure_builder() {
+    if docker buildx inspect multiarch >/dev/null 2>&1; then
+        docker buildx use multiarch >/dev/null 2>&1 || docker buildx inspect multiarch
+    else
+        docker buildx create --name multiarch --use --bootstrap >/dev/null
+    fi
+}
+
+# 备份已有的 tar 包
+backup_existing_tar() {
+    local tar_file="${IMAGE_NAME}-${IMAGE_TAG}.tar"
+    if [ -f "${tar_file}" ]; then
+        local timestamp
+        timestamp=$(date +%Y%m%d%H%M%S)
+        local backup_name="${IMAGE_NAME}-previous-${timestamp}.tar"
+        mv "${tar_file}" "${backup_name}"
+        log_warn "检测到现有 tar 包，已自动备份为 ${backup_name}"
+    fi
+}
+
 # 检查Docker是否安装
 check_docker() {
     if ! command -v docker &> /dev/null; then
@@ -67,7 +88,9 @@ build_image() {
     log_info "开始构建x86_64 Docker镜像..."
     
     # 设置构建器支持多平台
-    docker buildx create --name multiarch --use --bootstrap || true
+    ensure_builder
+    log_info "预拉取基础镜像 python:3.11-slim (linux/amd64)..."
+    docker pull --platform linux/amd64 python:3.11-slim || log_warn "预拉取基础镜像失败，继续使用本地缓存/拉取"
     
     # 构建x86_64镜像
     docker buildx build \
@@ -87,6 +110,7 @@ build_image() {
 # 保存镜像到tar文件
 save_image() {
     log_info "保存镜像到tar文件..."
+    backup_existing_tar
     docker save ${IMAGE_NAME}:${IMAGE_TAG} -o ${IMAGE_NAME}-${IMAGE_TAG}.tar
     
     if [ $? -eq 0 ]; then
