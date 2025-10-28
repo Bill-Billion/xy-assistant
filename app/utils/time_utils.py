@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional
@@ -386,7 +387,7 @@ def derive_alarm_target(
         if not alarm_dt.tzinfo:
             alarm_dt = alarm_dt.replace(tzinfo=EAST_EIGHT)
         alarm_dt = alarm_dt.astimezone(EAST_EIGHT)
-        target_iso = alarm_dt.strftime("%Y-%m-%d %H-%M-%S")
+        target_iso = alarm_dt.strftime("%Y-%m-%d %H:%M:%S")
 
     status = time_expr.periodic_status
     event = extract_event(query)
@@ -447,9 +448,15 @@ def describe_alarm_target(target: str, base_time: Optional[datetime] = None) -> 
 
     alarm_dt: Optional[datetime] = None
     try:
-        alarm_dt = datetime.strptime(target, "%Y-%m-%d %H-%M-%S").replace(tzinfo=EAST_EIGHT)
+        alarm_dt = datetime.strptime(target, "%Y-%m-%d %H:%M:%S").replace(tzinfo=EAST_EIGHT)
     except ValueError:
         alarm_dt = None
+
+    if alarm_dt is None:
+        try:
+            alarm_dt = datetime.strptime(target, "%Y-%m-%d %H-%M-%S").replace(tzinfo=EAST_EIGHT)
+        except ValueError:
+            alarm_dt = None
 
     if alarm_dt is None:
         try:
@@ -488,9 +495,11 @@ def describe_alarm_target(target: str, base_time: Optional[datetime] = None) -> 
         return "立即"
 
     if delta <= timedelta(hours=2):
-        days = delta.days
-        hours = delta.seconds // 3600
-        minutes = (delta.seconds % 3600) // 60
+        total_minutes = math.ceil(delta.total_seconds() / 60)
+        days = total_minutes // (24 * 60)
+        remaining_minutes = total_minutes % (24 * 60)
+        hours = remaining_minutes // 60
+        minutes = remaining_minutes % 60
         parts: list[str] = []
         if days:
             parts.append(f"{days}天")

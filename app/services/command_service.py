@@ -292,6 +292,7 @@ class CommandService:
                 context.user_candidates = candidate_users
                 self._conversation_manager.set_user_candidates(session_id, candidate_users)
 
+        # 组装 meta 信息，同时注入候选联系人，便于后续意图解析精准匹配。
         meta_payload = dict(payload.meta or {})
         if candidate_users:
             meta_payload["user_candidates"] = candidate_users
@@ -307,6 +308,7 @@ class CommandService:
 
         overall_start = perf_counter()
         weather_context = None
+        # 天气相关问题提前调用天气服务，供模型作为结构化上下文使用。
         if (
             self._weather_service
             and self._weather_service.enabled
@@ -331,6 +333,7 @@ class CommandService:
 
         try:
             classify_start = perf_counter()
+            # 核心步骤：调用意图分类器，结合大模型与规则得到结构化分析。
             classification = await self._intent_classifier.classify(
                 session_id=session_id,
                 query=payload.query,
@@ -343,6 +346,7 @@ class CommandService:
                 duration=round(perf_counter() - classify_start, 3),
                 session_id=session_id,
             )
+            # 将原始结果转为响应模型，确保字段类型一致。
             function_analysis = FunctionAnalysis.model_validate(classification.function_analysis)
             reply_message = classification.reply_message
             raw_output = classification.raw_llm_output

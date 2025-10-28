@@ -174,6 +174,7 @@ _knowledge_action_map = {
 }
 
 _knowledge_prefix_patterns: list[tuple[re.Pattern[str], str | None]] = [
+    (re.compile(r"^(?:我|我们|咱们)?(?:想|要)?(?:了解|知道|看看)(?:一下|下)?(?P<topic>.+)$"), None),
     (re.compile(r"^(?:请|能否|能不能|帮我|帮忙)?(?:给我|给咱|给家里人)?(?:简单|详细)?(?:讲讲|介绍|说说|科普|解释|说明)(?P<topic>.+)$"), None),
     (re.compile(r"^(?:请|能否|能不能|帮我|帮忙)?(?:告诉|告知|教)(?:我|一下)?(?P<topic>.+)$"), None),
     (re.compile(r"^(?:请|能否|能不能|帮忙)?(?:给我)?科普一下(?P<topic>.+)$"), None),
@@ -366,6 +367,8 @@ def _normalize_topic(raw_topic: str, action: str | None) -> str:
     topic = topic.strip()
     for phrase in _topic_trailing_phrases:
         if topic.endswith(phrase):
+            if phrase == "么" and topic.endswith("什么"):
+                continue
             topic = topic[: -len(phrase)].rstrip()
     topic = topic.strip()
     if action:

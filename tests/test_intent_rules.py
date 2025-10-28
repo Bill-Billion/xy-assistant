@@ -52,7 +52,7 @@ def test_alarm_relative_time():
     result = run_rules("提醒我10分钟后煮饭")
     assert result
     assert result.intent_code == IntentCode.ALARM_REMINDER
-    assert result.target == "2024-09-20 10-10-00"
+    assert result.target == "2024-09-20 10:10:00"
     assert result.event == "煮饭"
 
 
@@ -112,6 +112,14 @@ def test_health_knowledge_tell_me():
     assert result.intent_code == IntentCode.HEALTH_EDUCATION
     assert result.result == "健康科普"
     assert result.target == "高血压相关知识"
+
+
+def test_health_knowledge_want_to_learn():
+    result = run_rules("我想了解下高血压日常吃什么")
+    assert result
+    assert result.intent_code == IntentCode.HEALTH_EDUCATION
+    assert result.result == "健康科普"
+    assert result.target == "高血压日常吃什么"
 
 
 def test_health_evaluation_keyword():

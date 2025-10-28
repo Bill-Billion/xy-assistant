@@ -60,6 +60,57 @@ ACTIONABLE_INTENTS = ACTIONABLE_HEALTH_INTENTS | ACTIONABLE_CONTACT_INTENTS | {
     IntentCode.ALARM_VIEW,
 }
 
+# 规则优先映射：当大模型仅识别出泛化意图时，用于提升规则识别的细分意图。
+INTENT_OVERRIDE_MAP: dict[IntentCode, set[IntentCode]] = {
+    IntentCode.HEALTH_MONITOR_GENERAL: ACTIONABLE_HEALTH_INTENTS - {IntentCode.HEALTH_MONITOR_GENERAL},
+    IntentCode.FAMILY_DOCTOR_GENERAL: {
+        IntentCode.FAMILY_DOCTOR_CONTACT,
+        IntentCode.FAMILY_DOCTOR_CALL_AUDIO,
+        IntentCode.FAMILY_DOCTOR_CALL_VIDEO,
+    },
+    IntentCode.FAMILY_DOCTOR_CONTACT: {
+        IntentCode.FAMILY_DOCTOR_CALL_AUDIO,
+        IntentCode.FAMILY_DOCTOR_CALL_VIDEO,
+    },
+    IntentCode.COMMUNICATION_GENERAL: {
+        IntentCode.COMMUNICATION_CALL_AUDIO,
+        IntentCode.COMMUNICATION_CALL_VIDEO,
+    },
+    IntentCode.ENTERTAINMENT_GENERAL: {
+        IntentCode.ENTERTAINMENT_OPERA,
+        IntentCode.ENTERTAINMENT_OPERA_SPECIFIC,
+        IntentCode.ENTERTAINMENT_MUSIC,
+        IntentCode.ENTERTAINMENT_MUSIC_SPECIFIC,
+        IntentCode.ENTERTAINMENT_AUDIOBOOK,
+        IntentCode.GAME_DOU_DI_ZHU,
+        IntentCode.GAME_CHINESE_CHESS,
+        IntentCode.CHAT,
+    },
+    IntentCode.ENTERTAINMENT_OPERA: {IntentCode.ENTERTAINMENT_OPERA_SPECIFIC},
+    IntentCode.ENTERTAINMENT_MUSIC: {IntentCode.ENTERTAINMENT_MUSIC_SPECIFIC},
+    IntentCode.HOME_SERVICE_GENERAL: {
+        IntentCode.HOME_SERVICE_APPLIANCE,
+        IntentCode.HOME_SERVICE_HOUSE,
+        IntentCode.HOME_SERVICE_WATER_ELECTRIC,
+        IntentCode.HOME_SERVICE_MATERNAL,
+        IntentCode.HOME_SERVICE_DOMESTIC,
+        IntentCode.HOME_SERVICE_FOOT,
+    },
+    IntentCode.MALL_GENERAL: {
+        IntentCode.MALL_DIGITAL_HEALTH_ROBOT,
+        IntentCode.MALL_HEALTH_MONITOR_TERMINAL,
+        IntentCode.MALL_SMART_LIFE_TERMINAL,
+        IntentCode.MALL_HEALTH_FOOD,
+        IntentCode.MALL_SILVER_PRODUCTS,
+        IntentCode.MALL_DAILY_PRODUCTS,
+        IntentCode.MALL_ORDERS,
+    },
+    IntentCode.HEALTH_DOCTOR_GENERAL: {IntentCode.HEALTH_DOCTOR_SPECIFIC},
+}
+
+# 允许规则覆盖大模型结果的置信度容差，避免置信度接近时保留泛化意图。
+RULE_PROMOTION_TOLERANCE = 0.1
+
 RESULTS_REQUIRING_USER = {
     "健康监测",
     "血压监测",
@@ -105,6 +156,7 @@ class IntentClassifier:
         conversation_state: ConversationState,
     ) -> ClassificationResult:
         """对用户输入进行分类，生成结构化分析结果与回复。"""
+        # 先运行规则引擎，获取可能的高置信度提示意图。
         rule_result = run_rules(query, meta)
         logger.debug(
             "rule_result",
@@ -116,6 +168,7 @@ class IntentClassifier:
         llm_response_text = ""
         llm_parsed: dict[str, Any] = {}
         try:
+            # 汇总对话历史，保证模型理解当前上下文。
             messages = conversation_state.as_messages()
             reference_message = self._build_reference_message(query, rule_result, meta)
             if reference_message:
@@ -145,10 +198,6 @@ class IntentClassifier:
         )
         await self._refine_content_target(
             intent_code=intent_code,
-            query=query,
-            function_analysis=function_analysis,
-        )
-        await self._ensure_alarm_target(
             query=query,
             function_analysis=function_analysis,
         )
@@ -217,10 +266,78 @@ class IntentClassifier:
         query: str,
     ) -> tuple[Dict[str, Any], IntentCode]:
         """合并规则结果与大模型 JSON，并执行后置校验与补全。"""
+        # 1. 规范化大模型候选列表，方便与规则结果做精度比较。
         llm_parsed = llm_parsed or {}
         raw_result = llm_parsed.get("result")
 
-        intent_code = self._resolve_intent_code(rule_result, llm_parsed)
+        candidate_entries: list[dict[str, Any]] = []
+        for item in llm_parsed.get("intent_candidates", []) or []:
+            if not isinstance(item, dict):
+                continue
+            code_value = item.get("intent_code") or item.get("intent")
+            try:
+                candidate_code = IntentCode(code_value)
+            except Exception:  # noqa: BLE001
+                continue
+            candidate_definition = INTENT_DEFINITIONS.get(candidate_code)
+            if not candidate_definition:
+                continue
+            candidate_result = (item.get("result") or candidate_definition.result or "").strip()
+            candidate_target = (item.get("target") or "").strip()
+            candidate_reason = (item.get("reason") or item.get("reasoning") or "").strip()
+            try:
+                candidate_conf = float(item.get("confidence", 0) or 0)
+            except (TypeError, ValueError):
+                candidate_conf = 0.0
+            candidate_entry = {
+                "intent_code": candidate_code,
+                "result": candidate_result,
+                "target": candidate_target,
+                "confidence": max(0.0, min(candidate_conf, 1.0)),
+                "reason": candidate_reason,
+            }
+            candidate_entries.append(candidate_entry)
+
+        selected_candidate: dict[str, Any] | None = None
+        if candidate_entries:
+            candidate_entries.sort(key=lambda c: c["confidence"], reverse=True)
+            top_candidate = candidate_entries[0]
+            selected_candidate = {
+                "intent_code": top_candidate["intent_code"],
+                "result": top_candidate.get("result", ""),
+                "target": top_candidate.get("target", ""),
+                "confidence": top_candidate.get("confidence", 0.0),
+                "reason": top_candidate.get("reason", ""),
+            }
+
+        # 2. 将规则识别的结果转换为候选，必要时用于纠偏。
+        rule_promoted = False
+        rule_candidate: dict[str, Any] | None = None
+        if rule_result:
+            rule_conf = rule_result.confidence
+            try:
+                rule_conf_value = float(rule_conf) if rule_conf is not None else 0.95
+            except (TypeError, ValueError):
+                rule_conf_value = 0.95
+            rule_candidate = {
+                "intent_code": rule_result.intent_code,
+                "result": (rule_result.result or "").strip(),
+                "target": (rule_result.target or "").strip(),
+                "confidence": rule_conf_value,
+                "reason": (rule_result.reasoning or "").strip(),
+            }
+
+        if self._should_promote_rule_candidate(selected_candidate, rule_result):
+            selected_candidate = rule_candidate
+            rule_promoted = True
+        elif not selected_candidate and rule_candidate:
+            selected_candidate = rule_candidate
+
+        intent_code = (
+            selected_candidate["intent_code"]
+            if selected_candidate
+            else self._resolve_intent_code(rule_result, llm_parsed)
+        )
         definition = INTENT_DEFINITIONS.get(intent_code, INTENT_DEFINITIONS[IntentCode.UNKNOWN])
 
         # 结果优先级：规则细分 > LLM 合法枚举 > 枚举默认值 > 原始 LLM 结果
@@ -241,7 +358,13 @@ class IntentClassifier:
         weather_evidence = llm_parsed.get("weather_evidence")
 
         llm_result = llm_parsed.get("result")
-        if rule_result and rule_result.result:
+        candidate_result = selected_candidate.get("result") if selected_candidate else None
+
+        if selected_candidate and candidate_result in self._allowed_results:
+            result = candidate_result
+        elif selected_candidate and candidate_result and candidate_result not in self._allowed_results:
+            result = definition.result if definition.result in self._allowed_results else ""
+        elif rule_result and rule_result.result:
             result = rule_result.result
         elif llm_result and llm_result in self._allowed_results:
             result = llm_result
@@ -250,7 +373,10 @@ class IntentClassifier:
         else:
             result = llm_result or ""
 
-        target = llm_parsed.get("target") or ""
+        if selected_candidate:
+            target = selected_candidate.get("target", "") or ""
+        else:
+            target = llm_parsed.get("target") or ""
         if isinstance(target, str):
             target = target.strip()
         if (not target) and rule_result and rule_result.target is not None:
@@ -264,20 +390,22 @@ class IntentClassifier:
         if status is None and rule_result:
             status = rule_result.status
 
-        confidence = llm_parsed.get("confidence")
+        if selected_candidate:
+            confidence = selected_candidate.get("confidence", 0.0)
+        else:
+            confidence = llm_parsed.get("confidence")
         if confidence is None and rule_result and rule_result.confidence is not None:
             confidence = rule_result.confidence
         if confidence is None:
             confidence = 0.6
-        if rule_result:
-            # 如果规则提供置信度，则与 LLM 结果取较高值，确保明确意图不被降权。
+        try:
+            confidence = float(confidence)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        if rule_result and (not selected_candidate or confidence < self._confidence_threshold):
             rule_conf = rule_result.confidence if rule_result.confidence is not None else 0.95
-            try:
-                confidence = float(confidence)
-            except (TypeError, ValueError):
-                confidence = 0.0
             confidence = max(confidence, rule_conf)
-        confidence = min(max(float(confidence), 0.0), 1.0)
+        confidence = min(max(confidence, 0.0), 1.0)
 
         need_clarify = bool(llm_parsed.get("need_clarify", False))
         clarify_message = llm_parsed.get("clarify_message") or None
@@ -289,10 +417,14 @@ class IntentClassifier:
         reasoning_parts: list[str] = []
         if llm_parsed.get("reasoning"):
             reasoning_parts.append(str(llm_parsed["reasoning"]))
+        if selected_candidate and selected_candidate.get("reason"):
+            reasoning_parts.append(str(selected_candidate["reason"]))
         if rule_result and rule_result.reasoning:
             reasoning_parts.append(rule_result.reasoning)
         if raw_result and raw_result != result:
             reasoning_parts.append(f"LLM_suggested_result={raw_result}")
+        if rule_promoted and rule_result:
+            reasoning_parts.append(f"rule_override={rule_result.intent_code.value}")
         advice = (llm_parsed.get("advice") or "").strip()
         safety_notice = (llm_parsed.get("safety_notice") or "").strip()
 
@@ -311,6 +443,15 @@ class IntentClassifier:
                 need_clarify = True
                 if not clarify_message:
                     clarify_message = "我暂时无法识别您的需求，可以再具体描述一下吗？"
+
+        if (
+            selected_candidate
+            and selected_candidate.get("confidence", 0.0) < self._confidence_threshold
+            and intent_code not in ACTIONABLE_INTENTS
+        ):
+            need_clarify = True
+            if not clarify_message:
+                clarify_message = "为了确认没有理解错，您可以再具体说明一下需求吗？"
 
         if intent_code in ACTIONABLE_INTENTS and confidence >= self._confidence_threshold:
             need_clarify = False
@@ -350,6 +491,44 @@ class IntentClassifier:
         }
 
         return function_analysis, intent_code
+
+    def _should_promote_rule_candidate(
+        self,
+        selected_candidate: Optional[dict[str, Any]],
+        rule_result: Optional[RuleResult],
+    ) -> bool:
+        """判断是否需要将规则结果提升为主要候选。"""
+        if rule_result is None:
+            return False
+        if selected_candidate is None:
+            return True
+
+        candidate_code: IntentCode = selected_candidate["intent_code"]
+        rule_code = rule_result.intent_code
+
+        if candidate_code == rule_code:
+            return False
+
+        if candidate_code == IntentCode.UNKNOWN:
+            return True
+
+        promote_targets = INTENT_OVERRIDE_MAP.get(candidate_code, set())
+        if rule_code not in promote_targets:
+            return False
+
+        candidate_conf = selected_candidate.get("confidence", 0.0) or 0.0
+        try:
+            candidate_conf = float(candidate_conf)
+        except (TypeError, ValueError):
+            candidate_conf = 0.0
+
+        rule_conf = rule_result.confidence if rule_result.confidence is not None else 0.95
+        try:
+            rule_conf = float(rule_conf)
+        except (TypeError, ValueError):
+            rule_conf = 0.95
+
+        return rule_conf + RULE_PROMOTION_TOLERANCE >= candidate_conf
 
     async def _resolve_user_target(
         self,

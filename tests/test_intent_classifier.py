@@ -50,7 +50,7 @@ async def test_classifier_uses_rule_for_alarm():
         conversation_state=state,
     )
     assert result.function_analysis["result"] == "新增闹钟"
-    assert result.function_analysis["target"] == "2024-09-20 18-00-00"
+    assert result.function_analysis["target"] == "2024-09-20 18:00:00"
     assert result.function_analysis["need_clarify"] is False
     assert result.function_analysis["advice"] is None
 
@@ -170,8 +170,48 @@ async def test_health_question_provides_advice_and_safety():
     assert "头晕" in outcome.function_analysis["target"]
     assert outcome.function_analysis["advice"]
     assert outcome.function_analysis["safety_notice"]
+
+
+@pytest.mark.asyncio
+async def test_classifier_prefers_llm_candidates_over_rules():
+    fake_llm = FakeDoubaoClient(
+        {
+            "intent_candidates": [
+                {
+                    "intent_code": "HEALTH_EDUCATION",
+                    "result": "健康科普",
+                    "target": "高血压日常饮食",
+                    "confidence": 0.82,
+                    "reason": "询问饮食建议，属于健康知识类",
+                },
+                {
+                    "intent_code": "HEALTH_MONITOR_BLOOD_PRESSURE",
+                    "result": "血压监测",
+                    "confidence": 0.2,
+                    "reason": "包含血压关键词但未表达监测需求",
+                },
+            ],
+            "reply": "高血压患者日常饮食应注意低盐低脂，多吃新鲜蔬果……",
+            "advice": "高血压患者日常饮食应遵循低盐低脂原则。",
+            "safety_notice": "小雅的建议仅供参考，如血压异常请及时咨询医生。",
+            "need_clarify": False,
+        }
+    )
+
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    state = ConversationState(session_id="edu")
+    outcome = await classifier.classify(
+        session_id="edu",
+        query="我想了解下高血压日常吃什么",
+        meta={},
+        conversation_state=state,
+    )
+
+    assert outcome.function_analysis["result"] == "健康科普"
+    assert outcome.function_analysis["target"] == "高血压日常饮食"
     assert outcome.function_analysis["need_clarify"] is False
-    assert "就医" in outcome.function_analysis["safety_notice"]
+    assert outcome.function_analysis["need_clarify"] is False
+    assert "医生" in outcome.function_analysis["safety_notice"]
 
 
 @pytest.mark.asyncio
@@ -196,6 +236,39 @@ async def test_classifier_blood_pressure_monitor():
 
 
 @pytest.mark.asyncio
+async def test_classifier_promotes_rule_specific_monitor_when_llm_generic():
+    fake_llm = FakeDoubaoClient({
+        "intent_candidates": [
+            {
+                "intent_code": "HEALTH_MONITOR_GENERAL",
+                "result": "健康监测",
+                "confidence": 1.0,
+                "reason": "模型给出泛化健康监测意图",
+            }
+        ],
+        "need_clarify": True,
+        "clarify_message": "您是想了解监测方法还是其他健康需求呢？",
+        "advice": "建议保持健康生活方式。",
+        "safety_notice": "健康建议仅供参考。",
+    })
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    state = ConversationState(session_id="bp-override")
+    outcome = await classifier.classify(
+        session_id="bp-override",
+        query="我需要血压监测",
+        meta={},
+        conversation_state=state,
+    )
+
+    assert outcome.function_analysis["result"] == "血压监测"
+    assert outcome.function_analysis["target"] == ""
+    assert outcome.function_analysis["need_clarify"] is False
+    assert outcome.function_analysis["advice"] is None
+    assert outcome.function_analysis["safety_notice"] is None
+    assert "rule_override=HEALTH_MONITOR_BLOOD_PRESSURE" in (outcome.function_analysis["reasoning"] or "")
+
+
+@pytest.mark.asyncio
 async def test_doctor_contact_audio():
     fake_llm = FakeDoubaoClient({
         "intent_code": "UNKNOWN",
@@ -213,6 +286,36 @@ async def test_doctor_contact_audio():
     assert "高医生" in outcome.function_analysis["target"]
     assert outcome.function_analysis["need_clarify"] is False
     assert outcome.function_analysis["advice"] is None
+
+
+@pytest.mark.asyncio
+async def test_classifier_promotes_rule_for_doctor_contact():
+    fake_llm = FakeDoubaoClient({
+        "intent_candidates": [
+            {
+                "intent_code": "FAMILY_DOCTOR_GENERAL",
+                "result": "家庭医生",
+                "confidence": 0.92,
+                "reason": "模型识别为泛化家庭医生功能",
+            }
+        ],
+        "need_clarify": True,
+        "clarify_message": "您是想联系哪位家庭医生呢？",
+    })
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    state = ConversationState(session_id="doctor-override")
+    outcome = await classifier.classify(
+        session_id="doctor-override",
+        query="请帮我联系下高医生",
+        meta={},
+        conversation_state=state,
+    )
+
+    assert outcome.function_analysis["result"] == "家庭医生音频通话"
+    assert "高医生" in outcome.function_analysis["target"]
+    assert outcome.function_analysis["need_clarify"] is False
+    assert outcome.function_analysis["advice"] is None
+    assert "rule_override=FAMILY_DOCTOR_CALL_AUDIO" in (outcome.function_analysis["reasoning"] or "")
 
 
 @pytest.mark.asyncio
