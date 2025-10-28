@@ -44,6 +44,8 @@ async def test_classifier_uses_rule_for_alarm():
                     "result": "新增闹钟",
                     "target": "2024-09-20 18:00:00",
                     "parsed_time": "2024-09-20 18:00:00",
+                    "time_text": "今天下午6点",
+                    "time_confidence": 0.9,
                     "event": "晚间提醒",
                     "event_confidence": 0.9,
                     "status": "",
@@ -65,6 +67,8 @@ async def test_classifier_uses_rule_for_alarm():
     )
     assert result.function_analysis["result"] == "新增闹钟"
     assert result.function_analysis["target"] == "2024-09-20 18:00:00"
+    assert result.function_analysis["parsed_time"] == "2024-09-20 18:00:00"
+    assert result.function_analysis["time_source"] == "llm"
     assert result.function_analysis["need_clarify"] is False
     assert result.function_analysis["advice"] is None
     assert result.reply_message == "好的，我已为您设置今天18:00的闹钟。"
@@ -394,6 +398,8 @@ async def test_classifier_reply_fallback_when_missing():
                     "result": "新增闹钟",
                     "target": "2024-09-21 09:00:00",
                     "parsed_time": "2024-09-21 09:00:00",
+                    "time_text": "明早9点",
+                    "time_confidence": 0.88,
                     "event": "提醒喝水",
                     "event_confidence": 0.82,
                     "status": "",
@@ -415,6 +421,8 @@ async def test_classifier_reply_fallback_when_missing():
 
     assert outcome.function_analysis["result"] == "新增闹钟"
     assert outcome.function_analysis["event"] == "喝水"
+    assert outcome.function_analysis["parsed_time"] == "2024-09-21 09:00:00"
+    assert outcome.function_analysis["time_confidence"] == 0.88
     assert outcome.reply_message  # fallback 给出的消息不应为空
     assert "提醒您喝水" in outcome.reply_message
 
@@ -449,6 +457,43 @@ async def test_reasoning_deduplicated():
 
 
 @pytest.mark.asyncio
+async def test_alarm_low_time_confidence_requires_clarify():
+    fake_llm = FakeDoubaoClient(
+        {
+            "intent_candidates": [
+                {
+                    "intent_code": "ALARM_CREATE",
+                    "result": "新增闹钟",
+                    "target": "2024-09-21 09:00:00",
+                    "parsed_time": "2024-09-21 09:00:00",
+                    "time_text": "明早9点",
+                    "time_confidence": 0.3,
+                    "event": "晨练",
+                    "event_confidence": 0.8,
+                    "status": "",
+                    "status_confidence": 0.0,
+                    "confidence": 0.85,
+                    "reason": "识别到闹钟请求，但时间置信度较低",
+                }
+            ],
+            "reply": "",
+        }
+    )
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    state = ConversationState(session_id="alarm-low-conf")
+    outcome = await classifier.classify(
+        session_id="alarm-low-conf",
+        query="帮我定个明早九点的闹钟提醒我晨练",
+        meta={},
+        conversation_state=state,
+    )
+
+    assert outcome.function_analysis["need_clarify"] is True
+    assert outcome.function_analysis["clarify_message"]
+    assert outcome.function_analysis["time_confidence"] == 0.3
+
+
+@pytest.mark.asyncio
 async def test_alarm_event_from_llm_override_rule():
     fake_llm = FakeDoubaoClient(
         {
@@ -458,6 +503,8 @@ async def test_alarm_event_from_llm_override_rule():
                     "result": "新增闹钟",
                     "target": "2024-11-26 09:00:00",
                     "parsed_time": "2024-11-26 09:00:00",
+                    "time_text": "十一月二十六日上午九点",
+                    "time_confidence": 0.9,
                     "event": "提醒妈妈生日",
                     "event_confidence": 0.92,
                     "status": "",
@@ -481,5 +528,6 @@ async def test_alarm_event_from_llm_override_rule():
 
     assert outcome.function_analysis["result"] == "新增闹钟"
     assert outcome.function_analysis["event"] == "妈妈生日"
+    assert outcome.function_analysis["parsed_time"] == "2024-11-26 09:00:00"
     reasoning = outcome.function_analysis["reasoning"] or ""
     assert "alarm_details=llm" in reasoning

@@ -10,6 +10,10 @@ class FunctionAnalysis(BaseModel):
     target: Optional[str] = None
     event: Optional[str] = None
     status: Optional[str] = None
+    parsed_time: Optional[str] = None
+    time_text: Optional[str] = None
+    time_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    time_source: Optional[str] = None
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     need_clarify: bool = False
     clarify_message: Optional[str] = None
@@ -43,6 +47,10 @@ class CommandResponse(BaseModel):
                 "function_analysis": {
                     "result": "新增闹钟",
                     "target": "2024-09-20 18:00:00",
+                    "parsed_time": "2024-09-20 18:00:00",
+                    "time_text": "今天下午6点",
+                    "time_confidence": 0.92,
+                    "time_source": "llm",
                     "event": None,
                     "status": None,
                     "confidence": 0.92,

@@ -316,6 +316,8 @@ def apply_calendar_rule(context: RuleContext) -> Optional[RuleResult]:
 
 def apply_time_rule(context: RuleContext) -> Optional[RuleResult]:
     """时间播报与闹钟提醒解析。"""
+    week_tokens = ["下周", "下星期", "下礼拜", "这周", "本周", "周一", "周二", "周三", "周四", "周五", "周六", "周日", "周天"]
+    has_week_token = any(token in context.query for token in week_tokens)
     if "几点" in context.query or "现在时间" in context.query:
         return RuleResult(IntentCode.TIME_BROADCAST, "播报时间")
     if "闹钟" in context.query:
@@ -325,10 +327,14 @@ def apply_time_rule(context: RuleContext) -> Optional[RuleResult]:
         if not time_expr:
             return RuleResult(IntentCode.ALARM_CREATE, "新增闹钟", target="")
         target_str, event, status = derive_alarm_target(context.query, context.base_time, time_expr)
+        if has_week_token:
+            target_str = ""
         return RuleResult(IntentCode.ALARM_CREATE, "新增闹钟", target=target_str, event=event, status=status)
     if "提醒" in context.query:
         time_expr = extract_time_expression(context.query, context.base_time)
         target_str, event, status = derive_alarm_target(context.query, context.base_time, time_expr)
+        if has_week_token:
+            target_str = ""
         return RuleResult(IntentCode.ALARM_REMINDER, "新增闹钟", target=target_str, event=event, status=status)
     return None
 

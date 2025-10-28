@@ -63,6 +63,7 @@ ACTIONABLE_INTENTS = ACTIONABLE_HEALTH_INTENTS | ACTIONABLE_CONTACT_INTENTS | {
 # LLM 事件解析参数
 EVENT_CONFIDENCE_THRESHOLD = 0.6
 EVENT_MIN_LENGTH = 2
+TIME_CONFIDENCE_THRESHOLD = 0.6
 EVENT_TIME_TOKENS = {
     "今天",
     "明天",
@@ -280,7 +281,24 @@ class IntentClassifier:
         """将规则提示、时间等参考信息打包成辅助消息提供给大模型。"""
         hints: list[str] = []
         hints.append(f"参考信息（仅供参考，请以实际语义为准）")
-        hints.append(f"- 当前时间（东八区）：{now_e8().strftime('%Y-%m-%d %H:%M')}" )
+        base_time = now_e8()
+        weekday_labels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+        hints.append(
+            f"- 当前时间（东八区）：{base_time.strftime('%Y-%m-%d %H:%M')}（{weekday_labels[base_time.weekday()]}）"
+        )
+        future_7 = []
+        future_14 = []
+        for offset in range(1, 15):
+            future_day = base_time + timedelta(days=offset)
+            fragment = f"{future_day.strftime('%m-%d')}({weekday_labels[future_day.weekday()]})"
+            if offset <= 7:
+                future_7.append(fragment)
+            else:
+                future_14.append(fragment)
+        if future_7:
+            hints.append(f"- 未来7天：{', '.join(future_7)}")
+        if future_14:
+            hints.append(f"- 8-14天：{', '.join(future_14)}")
         if rule_result:
             hints.append(f"- 规则候选功能：{rule_result.intent_code.value}")
             if rule_result.result:
@@ -310,6 +328,14 @@ class IntentClassifier:
         except (TypeError, ValueError):
             llm_event_confidence = 0.0
 
+        def _safe_float(raw: Any) -> Optional[float]:
+            if raw is None:
+                return None
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                return None
+
         candidate_entries: list[dict[str, Any]] = []
         for item in llm_parsed.get("intent_candidates", []) or []:
             if not isinstance(item, dict):
@@ -328,6 +354,7 @@ class IntentClassifier:
             candidate_event = (item.get("event") or "").strip()
             candidate_status = (item.get("status") or "").strip()
             candidate_reason = (item.get("reason") or item.get("reasoning") or "").strip()
+            candidate_time_text = (item.get("time_text") or "").strip()
             try:
                 candidate_conf = float(item.get("confidence", 0) or 0)
             except (TypeError, ValueError):
@@ -340,6 +367,7 @@ class IntentClassifier:
                 candidate_status_conf = float(item.get("status_confidence", 0) or 0)
             except (TypeError, ValueError):
                 candidate_status_conf = 0.0
+            candidate_time_conf = _safe_float(item.get("time_confidence"))
             candidate_entry = {
                 "intent_code": candidate_code,
                 "result": candidate_result,
@@ -351,6 +379,8 @@ class IntentClassifier:
                 "status_confidence": max(0.0, min(candidate_status_conf, 1.0)),
                 "confidence": max(0.0, min(candidate_conf, 1.0)),
                 "reason": candidate_reason,
+                "time_text": candidate_time_text,
+                "time_confidence": candidate_time_conf,
             }
             candidate_entries.append(candidate_entry)
 
@@ -456,8 +486,12 @@ class IntentClassifier:
             result = llm_result or ""
 
         candidate_parsed_time = None
+        candidate_time_text = ""
+        candidate_time_conf = None
         if selected_candidate:
             candidate_parsed_time = (selected_candidate.get("parsed_time") or "").strip()
+            candidate_time_text = (selected_candidate.get("time_text") or "").strip()
+            candidate_time_conf = selected_candidate.get("time_confidence")
             target = selected_candidate.get("target", "") or ""
             if not target and candidate_parsed_time:
                 target = candidate_parsed_time
@@ -470,6 +504,25 @@ class IntentClassifier:
             target = target.strip()
         if (not target) and rule_result and rule_result.target is not None:
             target = rule_result.target
+
+        parsed_time_value = candidate_parsed_time or (llm_parsed.get("parsed_time") or "").strip()
+        time_text_value = candidate_time_text or (llm_parsed.get("time_text") or "").strip()
+        time_confidence = candidate_time_conf
+        if time_confidence is None:
+            time_confidence = _safe_float(llm_parsed.get("time_confidence"))
+        if time_confidence is not None:
+            time_confidence = max(0.0, min(time_confidence, 1.0))
+
+        time_source = "none"
+        if parsed_time_value:
+            if time_confidence is not None:
+                time_source = "llm" if time_confidence >= TIME_CONFIDENCE_THRESHOLD else "llm_low"
+            else:
+                time_source = "llm"
+        elif rule_result and rule_result.target:
+            time_source = "rule"
+
+        time_uncertain = False
 
         # 事件/状态主要用于闹钟提醒。
         event_source = "none"
@@ -546,6 +599,18 @@ class IntentClassifier:
         if rule_result and rule_result.clarify_message and not clarify_message:
             clarify_message = rule_result.clarify_message
 
+        if intent_code in {IntentCode.ALARM_CREATE, IntentCode.ALARM_REMINDER}:
+            if not parsed_time_value:
+                need_clarify = True
+                if not clarify_message:
+                    clarify_message = "我还需要确认具体提醒时间，可以再描述一下吗？"
+                time_uncertain = True
+            elif time_confidence is not None and time_confidence < TIME_CONFIDENCE_THRESHOLD:
+                need_clarify = True
+                if not clarify_message:
+                    clarify_message = "为了确保提醒准确，可以再确认一下具体时间吗？"
+                time_uncertain = True
+
         reasoning_parts: list[str] = []
         if llm_parsed.get("reasoning"):
             reasoning_parts.append(str(llm_parsed["reasoning"]))
@@ -566,6 +631,10 @@ class IntentClassifier:
             reasoning_parts.append(f"event_source={event_source}")
         if event_marker:
             reasoning_parts.append(event_marker)
+        if time_source != "none":
+            reasoning_parts.append(f"time_source={time_source}")
+        if time_confidence is not None:
+            reasoning_parts.append(f"time_confidence={round(time_confidence, 2)}")
         advice = (llm_parsed.get("advice") or "").strip()
         safety_notice = (llm_parsed.get("safety_notice") or "").strip()
 
@@ -604,7 +673,7 @@ class IntentClassifier:
             if not clarify_message:
                 clarify_message = "为了确认没有理解错，您可以再具体说明一下需求吗？"
 
-        if intent_code in ACTIONABLE_INTENTS and confidence >= self._confidence_threshold:
+        if intent_code in ACTIONABLE_INTENTS and confidence >= self._confidence_threshold and not time_uncertain:
             need_clarify = False
             clarify_message = None
 
@@ -628,6 +697,10 @@ class IntentClassifier:
             "target": target,
             "event": event,
             "status": status,
+            "parsed_time": parsed_time_value or None,
+            "time_text": time_text_value or None,
+            "time_confidence": time_confidence,
+            "time_source": time_source if time_source != "none" else None,
             "confidence": confidence,
             "need_clarify": need_clarify,
             "clarify_message": clarify_message,
@@ -647,6 +720,7 @@ class IntentClassifier:
             "llm_top_intent": llm_top_candidate_code.value if llm_top_candidate_code else None,
             "llm_top_result": llm_top_candidate_result,
             "event_source": event_source,
+            "time_source": time_source,
             "weather_needs_realtime": needs_realtime_data,
         }
 

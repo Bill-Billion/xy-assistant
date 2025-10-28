@@ -63,6 +63,13 @@ def test_alarm_periodic_time():
     assert "每周三" in (result.status or "")
 
 
+def test_alarm_week_token_no_precise_target():
+    result = run_rules("帮我订个下周一早上9点的闹钟提醒我开组会")
+    assert result
+    assert result.intent_code == IntentCode.ALARM_CREATE
+    assert result.target == ""
+
+
 def test_calendar_rule_from_prompt():
     result = run_rules("明天适合搬家吗")
     assert result

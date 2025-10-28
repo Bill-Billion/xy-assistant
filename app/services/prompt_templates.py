@@ -39,7 +39,9 @@ def build_system_prompt() -> str:
              * intent_code: 枚举代码
              * result: 功能 result 字符串
              * target: 功能目标，可为 ""
-             * parsed_time: 若为闹钟/提醒类，填写 ISO8601（YYYY-MM-DD HH:MM:SS）或 `""`
+             * parsed_time: 若为闹钟/提醒类，填写东八区 ISO8601（YYYY-MM-DD HH:MM:SS），若无法确定则为 `""`
+             * time_text: 识别的时间原始表述，例如“下周一早上9点”，无则 `""`
+             * time_confidence: 0~1，小数，用于衡量 parsed_time 的可靠度
              * event: 闹钟/提醒或任务事项描述，可为 ""
              * event_confidence: 0~1，小数，表示事件识别可靠度
              * status: 频次文本（如"每周三"），无则 ""
@@ -91,11 +93,15 @@ def build_system_prompt() -> str:
         - 系统可能会提供“参考信息：候选功能/目标/时间”等辅助信号。这些信息只是参考，你必须依据语义做最终判断。
         - 当选择与参考信息不同的结果时，请在 reasoning 中说明原因。
 
+        ### 时间理解提示
+        - 参考消息会提供当前日期（东八区）及可能的日期映射，请据此推断“下周一”“后天早上”等相对时间，并确保 `parsed_time` 与自然语言描述一致。
+        - 当无法给出可靠日期或时间（time_confidence < 0.6）时，请设置 `need_clarify=true` 并在 `clarify_message` 中说明需要用户确认。
+
         ### few-shot 示例
-        1. 闹钟设定
+        1. 相对日期闹钟设定
         ```
-        输入：帮我订个6点的闹钟
-        输出：{{{{"intent_candidates":[{{"intent_code":"ALARM_CREATE","result":"新增闹钟","target":"2024-09-20 18:00:00","parsed_time":"2024-09-20 18:00:00","event":"晚间散步提醒","event_confidence":0.92,"status":"","status_confidence":0.0,"advice":"","safety_notice":"","confidence":0.93,"reason":"识别到具体时间 18:00 并提炼事件","reply_hint":"今天18:00提醒晚间散步"}}],"weather_info":{{"location":{{"name":"","type":"","confidence":0.0}},"datetime":{{"text":"","iso":"","confidence":0.0}},"needs_realtime_data":false,"weather_summary":"","weather_condition":"","weather_confidence":0.0}},"reply":"好的，我已为您设置今天18:00的闹钟，届时会提醒您晚间散步，如需调整随时告诉我。","need_clarify":false,"clarify_message":null,"reasoning":"闹钟请求，解析时间 18:00 并提取事件。"}}}}
+        输入：帮我订个下周一早上9点的闹钟提醒我开组会
+        输出：{{{{"intent_candidates":[{{"intent_code":"ALARM_CREATE","result":"新增闹钟","target":"2024-09-23 09:00:00","parsed_time":"2024-09-23 09:00:00","time_text":"下周一早上9点","time_confidence":0.9,"event":"开组会","event_confidence":0.92,"status":"","status_confidence":0.0,"advice":"","safety_notice":"","confidence":0.93,"reason":"根据参考时间推断下周一为2024-09-23，并识别事件开组会","reply_hint":"下周一09:00提醒开组会"}}],"weather_info":{{"location":{{"name":"","type":"","confidence":0.0}},"datetime":{{"text":"","iso":"","confidence":0.0}},"needs_realtime_data":false,"weather_summary":"","weather_condition":"","weather_confidence":0.0}},"reply":"好的，我已为您设置下周一（9月23日）早上9点的闹钟，届时会提醒您参加组会。需要我设为重复提醒吗？","need_clarify":false,"clarify_message":null,"reasoning":"闹钟请求，参考当前是2024-09-20（周五），下周一为9月23日。"}}}}
         ```
 
         2. 天气查询（含相对日期）
