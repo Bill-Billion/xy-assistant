@@ -16,6 +16,7 @@ from app.services.llm_client import DoubaoClient
 from app.services.target_refiner import TargetRefiner
 from app.services.prompt_templates import build_system_prompt, get_allowed_results
 from app.utils.time_utils import EAST_EIGHT, now_e8, sanitize_person_name
+from app.core.config import get_settings
 
 
 
@@ -182,9 +183,11 @@ class IntentClassifier:
         """初始化依赖并生成系统提示词。"""
         self._llm_client = llm_client
         self._confidence_threshold = confidence_threshold
+        settings = get_settings()
         self._system_prompt = build_system_prompt()
         self._allowed_results = get_allowed_results()
         self._target_refiner = TargetRefiner(llm_client)
+        self._default_city = settings.weather_default_city
 
     async def classify(
         self,
@@ -286,6 +289,7 @@ class IntentClassifier:
         hints.append(
             f"- 当前时间（东八区）：{base_time.strftime('%Y-%m-%d %H:%M')}（{weekday_labels[base_time.weekday()]}）"
         )
+        hints.append(f"- 默认城市：{self._default_city}（若用户未说明地点，请使用此城市）")
         future_7 = []
         future_14 = []
         for offset in range(1, 15):

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from textwrap import dedent
 
+from app.core.config import get_settings
 from app.services.intent_definitions import INTENT_DEFINITIONS
 
 
 # 允许的 result 集合，便于在分类器中做白名单校验。
 ALLOWED_RESULTS = {definition.result for definition in INTENT_DEFINITIONS.values()}
+DEFAULT_CITY = get_settings().weather_default_city
 
 
 def build_system_prompt() -> str:
@@ -33,6 +35,7 @@ def build_system_prompt() -> str:
             - 对于“怎么判断…、怎么处理…、怎么办…、给我讲讲…知识”等健康知识类提问，输出 `intent_code=HEALTH_EDUCATION`，`result="健康科普"`，`target` 填写去掉引导词后的主题（例如“判断高血压”）。
             - 若 meta 中提供 `user_candidates`（例如 "小张,小杨"），在健康监测、健康评估、健康画像等需要对象的功能中，优先将 `target` 设置为最匹配的候选人名。若无法确定匹配，可置空并在 reasoning 中说明。
             - 若 meta.weather 提供实时或预报数据（含 `derived_flags`），回答天气问题时应直接使用这些数据做判断，例如明确说明“是晴天/会下雨/气温范围”。不要仅回答“我可以帮您查询”。
+            - 若用户未指明地点，请默认使用“{DEFAULT_CITY}”，并在 `weather_info.location` 中填写该城市。
             - 未命中 → 仍要根据语义给出知识型建议（advice），再进行澄清或推荐。
         3. 输出一个 JSON 对象，字段要求：
            - intent_candidates: 至少 1 个元素的数组，按置信度从高到低排列。每个元素包含：
