@@ -89,6 +89,12 @@ EVENT_PREFIX_TOKENS = {
     "要记得",
     "麻烦提醒",
     "帮我",
+    "定个",
+    "定",
+    "订个",
+    "订",
+    "设定",
+    "设置",
 }
 
 # 规则优先映射：当大模型仅识别出泛化意图时，用于提升规则识别的细分意图。
@@ -356,13 +362,7 @@ class IntentClassifier:
             top_candidate = candidate_entries[0]
             llm_top_candidate_code = top_candidate["intent_code"]
             llm_top_candidate_result = top_candidate.get("result", "")
-            selected_candidate = {
-                "intent_code": top_candidate["intent_code"],
-                "result": top_candidate.get("result", ""),
-                "target": top_candidate.get("target", ""),
-                "confidence": top_candidate.get("confidence", 0.0),
-                "reason": top_candidate.get("reason", ""),
-            }
+            selected_candidate = dict(top_candidate)
 
         # 2. 将规则识别的结果转换为候选，必要时用于纠偏。
         rule_promoted = False
@@ -473,6 +473,7 @@ class IntentClassifier:
 
         # 事件/状态主要用于闹钟提醒。
         event_source = "none"
+        event_marker = None
         candidate_event = None
         candidate_event_conf = 0.0
         candidate_status = None
@@ -488,27 +489,30 @@ class IntentClassifier:
             sanitized = self._sanitize_event_text(candidate_event)
             if self._validate_event_text(sanitized):
                 event = sanitized
-                event_source = (
-                    "llm"
-                    if candidate_event_conf >= EVENT_CONFIDENCE_THRESHOLD
-                    else "llm_low_conf"
-                )
+                if candidate_event_conf >= EVENT_CONFIDENCE_THRESHOLD:
+                    event_source = "llm"
+                    event_marker = "alarm_details=llm"
+                else:
+                    event_source = "llm_low_conf"
+                    event_marker = "alarm_details=llm_low"
 
         if event is None and llm_parsed.get("event"):
             sanitized = self._sanitize_event_text(llm_parsed.get("event") or "")
             if self._validate_event_text(sanitized):
                 event = sanitized
-                event_source = (
-                    "llm"
-                    if llm_event_confidence >= EVENT_CONFIDENCE_THRESHOLD
-                    else "llm_low_conf"
-                )
+                if llm_event_confidence >= EVENT_CONFIDENCE_THRESHOLD:
+                    event_source = "llm"
+                    event_marker = "alarm_details=llm"
+                else:
+                    event_source = "llm_low_conf"
+                    event_marker = "alarm_details=llm_low"
 
         if event is None and rule_result and rule_result.event:
             sanitized = self._sanitize_event_text(rule_result.event)
             if self._validate_event_text(sanitized):
                 event = sanitized
                 event_source = "rule"
+                event_marker = "alarm_details=rule"
 
         status = None
         if candidate_status and candidate_status_conf >= 0.5:
@@ -560,6 +564,8 @@ class IntentClassifier:
                 reasoning_parts.append(f"rule_override={rule_result.intent_code.value}")
         if event_source != "none":
             reasoning_parts.append(f"event_source={event_source}")
+        if event_marker:
+            reasoning_parts.append(event_marker)
         advice = (llm_parsed.get("advice") or "").strip()
         safety_notice = (llm_parsed.get("safety_notice") or "").strip()
 
@@ -756,10 +762,9 @@ class IntentClassifier:
             return
 
         matched = None
-        llm_match, llm_confidence = await self._match_candidate_with_llm(candidate_name, candidates)
-        if llm_match and llm_match in candidates and llm_confidence >= 0.6:
-            matched = llm_match
-        if not matched:
+        if candidate_name in candidates:
+            matched = candidate_name
+        else:
             matched = self._fuzzy_match_candidate(candidate_name, candidates)
         if not matched:
             return
@@ -802,40 +807,6 @@ class IntentClassifier:
         if any(keyword in query for keyword in keywords) and len(cleaned) < len(query.strip()):
             return None
         return cleaned
-
-    async def _match_candidate_with_llm(self, name: str, candidates: List[str]) -> tuple[Optional[str], float]:
-        if not name or not candidates:
-            return None, 0.0
-        system_prompt = "你是中文人名匹配助手，只从候选列表中选择最接近的名字。"
-        user_payload = {
-            "candidates": candidates,
-            "input": name,
-            "output_format": {"match": "候选名单中的名字", "confidence": "0-1之间的小数"},
-        }
-        messages = [
-            {
-                "role": "user",
-                "content": json.dumps(user_payload, ensure_ascii=False),
-            }
-        ]
-        try:
-            raw, parsed = await self._llm_client.chat(
-                system_prompt=system_prompt,
-                messages=messages,
-                response_format={"type": "json_object"},
-            )
-            _ = raw  # raw text暂时无需使用
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("user candidate LLM match failed", error=str(exc))
-            return None, 0.0
-
-        match_name = parsed.get("match") if isinstance(parsed, dict) else None
-        confidence = parsed.get("confidence") if isinstance(parsed, dict) else 0.0
-        try:
-            confidence_value = float(confidence) if confidence is not None else 0.0
-        except (TypeError, ValueError):
-            confidence_value = 0.0
-        return match_name, confidence_value
 
     @staticmethod
     def _fuzzy_match_candidate(name: str, candidates: List[str]) -> Optional[str]:
@@ -918,13 +889,27 @@ class IntentClassifier:
         result = function_analysis.get("result")
         advice = function_analysis.get("advice")
         safety = function_analysis.get("safety_notice")
+        event = (function_analysis.get("event") or "").strip()
+        status = (function_analysis.get("status") or "").strip()
+        target = (function_analysis.get("target") or "").strip()
         if function_analysis.get("need_clarify"):
             clarify = function_analysis.get("clarify_message") or "我需要确认一下您的需求，可以详细说明吗？"
             parts = [part for part in [advice, safety, clarify] if part]
             return " ".join(parts) if parts else clarify
         parts = [part for part in [advice, safety] if part]
+        schedule_bits = [bit for bit in [status, target] if bit]
+        schedule_desc = "、".join(schedule_bits)
         if result:
-            parts.append(f"好的，我会为您处理{result}相关的请求。")
+            if schedule_desc and event:
+                parts.append(f"好的，我会在{schedule_desc}提醒您{event}。")
+            elif schedule_desc:
+                parts.append(f"好的，我会在{schedule_desc}为您处理{result}。")
+            elif event:
+                parts.append(f"好的，我会提醒您{event}。")
+            else:
+                parts.append(f"好的，我会为您处理{result}相关的请求。")
+        elif event:
+            parts.append(f"好的，我会记得提醒您{event}。")
         if not parts:
             parts.append("好的，我在这里，随时为您服务。")
         return " ".join(parts).strip()

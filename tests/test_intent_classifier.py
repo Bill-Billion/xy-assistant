@@ -67,7 +67,7 @@ async def test_classifier_uses_rule_for_alarm():
     assert result.function_analysis["target"] == "2024-09-20 18:00:00"
     assert result.function_analysis["need_clarify"] is False
     assert result.function_analysis["advice"] is None
-    assert result.reply_message == "好的，为您设置闹钟。"
+    assert result.reply_message == "好的，我已为您设置今天18:00的闹钟。"
 
 
 @pytest.mark.asyncio
@@ -386,21 +386,24 @@ async def test_classifier_health_knowledge_query():
 
 @pytest.mark.asyncio
 async def test_classifier_reply_fallback_when_missing():
-    fake_llm = FakeDoubaoClient([
+    fake_llm = FakeDoubaoClient(
         {
-            "intent_code": "UNKNOWN",
-            "confidence": 0.3,
-        },
-        {
-            "confidence": 0.9,
-            "target_iso": "2024-09-21 09:00:00",
-            "event": "喝水",
-            "event_confidence": 0.9,
-            "status": "",
-            "status_confidence": 0.0,
-            "reply": "好的，我将在明早9点提醒您喝水。",
-        },
-    ])
+            "intent_candidates": [
+                {
+                    "intent_code": "ALARM_CREATE",
+                    "result": "新增闹钟",
+                    "target": "2024-09-21 09:00:00",
+                    "parsed_time": "2024-09-21 09:00:00",
+                    "event": "提醒喝水",
+                    "event_confidence": 0.82,
+                    "status": "",
+                    "status_confidence": 0.0,
+                    "confidence": 0.88,
+                    "reason": "解析出明早9点的闹钟并识别提醒事项",
+                }
+            ],
+        }
+    )
     classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
     state = ConversationState(session_id="alarm-fallback")
     outcome = await classifier.classify(
@@ -413,7 +416,7 @@ async def test_classifier_reply_fallback_when_missing():
     assert outcome.function_analysis["result"] == "新增闹钟"
     assert outcome.function_analysis["event"] == "喝水"
     assert outcome.reply_message  # fallback 给出的消息不应为空
-    assert "喝水" in outcome.reply_message
+    assert "提醒您喝水" in outcome.reply_message
 
 
 @pytest.mark.asyncio
@@ -447,7 +450,7 @@ async def test_reasoning_deduplicated():
 
 @pytest.mark.asyncio
 async def test_alarm_event_from_llm_override_rule():
-    fake_llm = FakeDoubaoClient([
+    fake_llm = FakeDoubaoClient(
         {
             "intent_candidates": [
                 {
@@ -456,25 +459,16 @@ async def test_alarm_event_from_llm_override_rule():
                     "target": "2024-11-26 09:00:00",
                     "parsed_time": "2024-11-26 09:00:00",
                     "event": "提醒妈妈生日",
-                    "event_confidence": 0.55,
+                    "event_confidence": 0.92,
                     "status": "",
                     "status_confidence": 0.0,
-                    "confidence": 0.85,
-                    "reason": "识别为闹钟设置",
+                    "confidence": 0.9,
+                    "reason": "识别为闹钟设置并提取提醒事项",
                 }
             ],
             "reply": "好的，我已经为您设置闹钟。",
-        },
-        {
-            "confidence": 0.92,
-            "target_iso": "2024-11-26 09:00:00",
-            "event": "妈妈生日",
-            "event_confidence": 0.95,
-            "status": "",
-            "status_confidence": 0.0,
-            "reply": "好的，我会在11月26日上午9点提醒您妈妈生日。",
-        },
-    ])
+        }
+    )
 
     classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
     state = ConversationState(session_id="alarm-event")
@@ -487,4 +481,5 @@ async def test_alarm_event_from_llm_override_rule():
 
     assert outcome.function_analysis["result"] == "新增闹钟"
     assert outcome.function_analysis["event"] == "妈妈生日"
-    assert "alarm_details=llm" in (outcome.function_analysis["reasoning"] or "")
+    reasoning = outcome.function_analysis["reasoning"] or ""
+    assert "alarm_details=llm" in reasoning
