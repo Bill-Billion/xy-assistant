@@ -23,6 +23,10 @@ def get_llm_client() -> DoubaoClient:
         api_url=settings.doubao_api_url,
         model=settings.doubao_model,
         timeout=settings.doubao_timeout,
+        max_tokens=settings.doubao_max_tokens,
+        temperature=settings.doubao_temperature,
+        top_p=settings.doubao_top_p,
+        stop_words=settings.doubao_stop_words,
     )
 
 
@@ -61,6 +65,7 @@ def get_weather_broadcast_generator() -> WeatherBroadcastGenerator:
         llm_client,
         enabled=settings.weather_broadcast_llm_enabled,
         cache_ttl=settings.weather_cache_ttl,
+        max_tokens_override=settings.weather_broadcast_max_tokens,
     )
 
 

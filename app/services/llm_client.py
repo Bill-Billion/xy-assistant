@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from time import perf_counter
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -18,6 +19,11 @@ class DoubaoClient:
         model: str,
         timeout: float = 10.0,
         max_retries: int = 3,
+        *,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        stop_words: Optional[List[str]] = None,
     ) -> None:
         # 基础配置参数
         self.api_key = api_key
@@ -25,6 +31,10 @@ class DoubaoClient:
         self.model = model
         self.timeout = timeout
         self.max_retries = max_retries
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.top_p = top_p
+        self.stop_words = stop_words or None
         self._client = httpx.AsyncClient(timeout=timeout)
 
     async def chat(
@@ -32,6 +42,7 @@ class DoubaoClient:
         system_prompt: str,
         messages: List[Dict[str, str]],
         response_format: Optional[Dict[str, Any]] = None,
+        overrides: Optional[Dict[str, Any]] = None,
     ) -> tuple[str, dict[str, Any]]:
         """统一处理请求构造、重试机制以及 JSON 解析。"""
         headers = {
@@ -48,19 +59,38 @@ class DoubaoClient:
                 "type": "disabled"
             }
         }
+        if self.max_tokens is not None:
+            payload["max_tokens"] = self.max_tokens
+        if self.temperature is not None:
+            payload["temperature"] = self.temperature
+        if self.top_p is not None:
+            payload["top_p"] = self.top_p
+        if self.stop_words:
+            payload["stop"] = self.stop_words
         if response_format:
             payload["response_format"] = response_format
+        if overrides:
+            payload.update(overrides)
 
         attempt = 0
         last_exception: Exception | None = None
         while attempt < self.max_retries:
             try:
+                call_start = perf_counter()
                 response = await self._client.post(self.api_url, headers=headers, json=payload)
                 response.raise_for_status()
                 data = response.json()
                 raw_text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
                 parsed = self._safe_parse_json(raw_text)
-                logger.debug("LLM response received", parsed=parsed)
+                duration = round(perf_counter() - call_start, 3)
+                logger.debug(
+                    "LLM response received",
+                    parsed=parsed,
+                    duration=duration,
+                    max_tokens=payload.get("max_tokens"),
+                    temperature=payload.get("temperature"),
+                    top_p=payload.get("top_p"),
+                )
                 return raw_text, parsed
             except Exception as exc:  # noqa: BLE001
                 logger.exception("LLM 调用失败", attempt=attempt + 1, error=str(exc))

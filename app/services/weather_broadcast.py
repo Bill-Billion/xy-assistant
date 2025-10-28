@@ -30,6 +30,7 @@ class WeatherBroadcastGenerator:
         *,
         enabled: bool = True,
         cache_ttl: int = 300,
+        max_tokens_override: int | None = None,
     ) -> None:
         self._llm_client = llm_client
         self._enabled = bool(enabled and llm_client)
@@ -37,6 +38,7 @@ class WeatherBroadcastGenerator:
             maxsize=128,
             ttl=cache_ttl,
         )
+        self._max_tokens_override = max_tokens_override
 
     def enabled(self) -> bool:
         return self._enabled
@@ -58,10 +60,14 @@ class WeatherBroadcastGenerator:
         system_prompt = self._build_system_prompt(weather_context)
 
         try:
+            overrides = None
+            if self._max_tokens_override is not None:
+                overrides = {"max_tokens": self._max_tokens_override}
             _, parsed = await self._llm_client.chat(
                 system_prompt=system_prompt,
                 messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
                 response_format={"type": "json_object"},
+                overrides=overrides,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("weather broadcast llm failed", error=str(exc))

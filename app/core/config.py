@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     )
     doubao_model: str = Field(..., alias="DOUBAO_MODEL")
     doubao_timeout: float = Field(10.0, alias="DOUBAO_TIMEOUT")
+    doubao_max_tokens: int | None = Field(None, alias="DOUBAO_MAX_TOKENS")
+    doubao_temperature: float | None = Field(None, alias="DOUBAO_TEMPERATURE")
+    doubao_top_p: float | None = Field(None, alias="DOUBAO_TOP_P")
+    doubao_stop_words: list[str] | None = Field(None, alias="DOUBAO_STOP_WORDS")
     confidence_threshold: float = Field(0.7, alias="CONFIDENCE_THRESHOLD")
     environment: Literal["dev", "prod", "test"] = Field("dev", alias="ENVIRONMENT")
     weather_api_enabled: bool = Field(True, alias="WEATHER_API_ENABLED")
@@ -30,6 +34,7 @@ class Settings(BaseSettings):
     weather_llm_confidence_threshold: float = Field(0.6, alias="WEATHER_LLM_CONFIDENCE_THRESHOLD")
     weather_llm_low_confidence_threshold: float = Field(0.3, alias="WEATHER_LLM_LOW_CONFIDENCE_THRESHOLD")
     weather_broadcast_llm_enabled: bool = Field(True, alias="WEATHER_BROADCAST_LLM_ENABLED")
+    weather_broadcast_max_tokens: int | None = Field(None, alias="WEATHER_BROADCAST_MAX_TOKENS")
 
     model_config = SettingsConfigDict(
         env_file=(Path(__file__).resolve().parent.parent.parent / ".env"),
