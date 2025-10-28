@@ -38,29 +38,33 @@ class RuleResult:
     need_clarify: bool = False
     clarify_message: Optional[str] = None
     reasoning: Optional[str] = None
+    weather_condition: Optional[str] = None
 
 
 # 健康监测关键词映射：不同检测需求需返回对应细分意图与固定 result。
 _health_metric_map = {
-    "血压": (IntentCode.HEALTH_MONITOR_BLOOD_PRESSURE, "血压监测"),
     "测血压": (IntentCode.HEALTH_MONITOR_BLOOD_PRESSURE, "血压监测"),
     "血压监测": (IntentCode.HEALTH_MONITOR_BLOOD_PRESSURE, "血压监测"),
-    "血氧": (IntentCode.HEALTH_MONITOR_BLOOD_OXYGEN, "血氧监测"),
     "血氧监测": (IntentCode.HEALTH_MONITOR_BLOOD_OXYGEN, "血氧监测"),
-    "心率": (IntentCode.HEALTH_MONITOR_HEART_RATE, "心率监测"),
+    "测血氧": (IntentCode.HEALTH_MONITOR_BLOOD_OXYGEN, "血氧监测"),
     "心率监测": (IntentCode.HEALTH_MONITOR_HEART_RATE, "心率监测"),
-    "血糖": (IntentCode.HEALTH_MONITOR_BLOOD_SUGAR, "血糖监测"),
+    "测心率": (IntentCode.HEALTH_MONITOR_HEART_RATE, "心率监测"),
     "血糖监测": (IntentCode.HEALTH_MONITOR_BLOOD_SUGAR, "血糖监测"),
-    "血脂": (IntentCode.HEALTH_MONITOR_BLOOD_LIPIDS, "血脂监测"),
+    "测血糖": (IntentCode.HEALTH_MONITOR_BLOOD_SUGAR, "血糖监测"),
     "血脂监测": (IntentCode.HEALTH_MONITOR_BLOOD_LIPIDS, "血脂监测"),
-    "体重": (IntentCode.HEALTH_MONITOR_WEIGHT, "体重监测"),
+    "测血脂": (IntentCode.HEALTH_MONITOR_BLOOD_LIPIDS, "血脂监测"),
     "称体重": (IntentCode.HEALTH_MONITOR_WEIGHT, "体重监测"),
-    "体温": (IntentCode.HEALTH_MONITOR_BODY_TEMPERATURE, "体温监测"),
+    "体重监测": (IntentCode.HEALTH_MONITOR_WEIGHT, "体重监测"),
     "测体温": (IntentCode.HEALTH_MONITOR_BODY_TEMPERATURE, "体温监测"),
-    "血红蛋白": (IntentCode.HEALTH_MONITOR_HEMOGLOBIN, "血红蛋白监测"),
-    "尿酸": (IntentCode.HEALTH_MONITOR_URIC_ACID, "尿酸监测"),
-    "睡眠": (IntentCode.HEALTH_MONITOR_SLEEP, "睡眠监测"),
+    "体温监测": (IntentCode.HEALTH_MONITOR_BODY_TEMPERATURE, "体温监测"),
+    "血红蛋白监测": (IntentCode.HEALTH_MONITOR_HEMOGLOBIN, "血红蛋白监测"),
+    "测血红蛋白": (IntentCode.HEALTH_MONITOR_HEMOGLOBIN, "血红蛋白监测"),
+    "尿酸监测": (IntentCode.HEALTH_MONITOR_URIC_ACID, "尿酸监测"),
+    "测尿酸": (IntentCode.HEALTH_MONITOR_URIC_ACID, "尿酸监测"),
     "睡眠监测": (IntentCode.HEALTH_MONITOR_SLEEP, "睡眠监测"),
+    "睡眠情况": (IntentCode.HEALTH_MONITOR_SLEEP, "睡眠监测"),
+    "睡眠质量": (IntentCode.HEALTH_MONITOR_SLEEP, "睡眠监测"),
+    "睡眠状态": (IntentCode.HEALTH_MONITOR_SLEEP, "睡眠监测"),
 }
 
 _health_evaluation_keywords = [
@@ -184,6 +188,18 @@ _knowledge_suffix_patterns: list[tuple[re.Pattern[str], str | None]] = [
     (re.compile(r"(?P<topic>.+?)的?(相关)?知识$"), None),
 ]
 
+_weather_condition_patterns: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"晴|晴朗|阳光|太阳"), "sunny"),
+    (re.compile(r"雪|下雪|有雪|降雪"), "snow"),
+    (re.compile(r"雨|下雨|降雨|雨水"), "rain"),
+    (re.compile(r"风|刮风|大风|风大"), "wind"),
+    (re.compile(r"热|炎热|高温|很热"), "hot"),
+    (re.compile(r"冷|寒冷|低温|很冷"), "cold"),
+    (re.compile(r"雾霾|空气质量|污染"), "air_quality"),
+    (re.compile(r"降雨概率|下不下雨|会不会下雨"), "rain_chance"),
+    (re.compile(r"温度|气温|几度"), "temperature"),
+]
+
 _topic_leading_phrases = [
     "关于",
     "有关",
@@ -252,26 +268,37 @@ _topic_trailing_phrases = [
 
 
 def apply_weather_rule(context: RuleContext) -> Optional[RuleResult]:
-    """天气相关意图匹配，优先识别今天/明天/后天，或处理指定日期。"""
-    weather_match = re.search(r"天气", context.query)
-    if not weather_match:
+    """天气相关意图匹配，识别日期与关注的具体天气要素。"""
+    query = context.query
+    if not any(keyword in query for keyword in ["天气", "气温", "温度", "晴", "雨", "雪", "风", "雾霾", "空气质量"]):
         return None
 
-    parsed = parse_weather_date(context.query, context.base_time)
+    weather_condition = None
+    for pattern, condition in _weather_condition_patterns:
+        if pattern.search(query):
+            weather_condition = condition
+            break
+
+    parsed = parse_weather_date(query, context.base_time)
     if not parsed:
         return None
 
     date_kind, date_value = parsed.kind, parsed.value
     if date_kind == "today":
-        return RuleResult(IntentCode.WEATHER_TODAY, "今天天气", target="今天")
+        return RuleResult(IntentCode.WEATHER_TODAY, "今天天气", target="今天", weather_condition=weather_condition)
     if date_kind == "tomorrow":
-        return RuleResult(IntentCode.WEATHER_TOMORROW, "明天天气", target="明天")
+        return RuleResult(IntentCode.WEATHER_TOMORROW, "明天天气", target="明天", weather_condition=weather_condition)
     if date_kind == "day_after":
-        return RuleResult(IntentCode.WEATHER_DAY_AFTER, "后天天气", target="后天")
+        return RuleResult(IntentCode.WEATHER_DAY_AFTER, "后天天气", target="后天", weather_condition=weather_condition)
     if date_kind == "specific":
         if not is_within_days(date_value, context.base_time, 15):
-            return RuleResult(IntentCode.WEATHER_OUT_OF_RANGE, "我还只能查到15天内的天气哦", target="")
-        return RuleResult(IntentCode.WEATHER_SPECIFIC, f"{date_value.strftime('%m%d')}天气", target=date_value.strftime("%m%d"))
+            return RuleResult(IntentCode.WEATHER_OUT_OF_RANGE, "我还只能查到15天内的天气哦", target="", weather_condition=weather_condition)
+        return RuleResult(
+            IntentCode.WEATHER_SPECIFIC,
+            f"{date_value.strftime('%m%d')}天气",
+            target=date_value.strftime("%m%d"),
+            weather_condition=weather_condition,
+        )
     return None
 
 

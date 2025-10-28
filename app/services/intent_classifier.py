@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from datetime import timedelta
 from difflib import SequenceMatcher
+from time import perf_counter
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
@@ -120,10 +121,17 @@ class IntentClassifier:
             if reference_message:
                 messages.append({"role": "assistant", "content": reference_message})
             messages.append({"role": "user", "content": query})
+            classify_llm_start = perf_counter()
             llm_response_text, llm_parsed = await self._llm_client.chat(
                 system_prompt=self._system_prompt,
                 messages=messages,
                 response_format={"type": "json_object"},
+            )
+            logger.debug(
+                "timing intent_classifier",
+                step="primary_llm",
+                duration=round(perf_counter() - classify_llm_start, 3),
+                session_id=session_id,
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("LLM 调用失败，采用规则兜底", error=str(exc))
@@ -195,6 +203,8 @@ class IntentClassifier:
                 hints.append(f"- 候选 result：{rule_result.result}")
             if rule_result.target:
                 hints.append(f"- 候选 target：{rule_result.target}")
+            if getattr(rule_result, "weather_condition", None):
+                hints.append(f"- 关注天气要素：{rule_result.weather_condition}")
         if meta:
             hints.append(f"- 上下文信息：{json.dumps(meta, ensure_ascii=False)}")
         content = "\n".join(hints)
@@ -214,6 +224,22 @@ class IntentClassifier:
         definition = INTENT_DEFINITIONS.get(intent_code, INTENT_DEFINITIONS[IntentCode.UNKNOWN])
 
         # 结果优先级：规则细分 > LLM 合法枚举 > 枚举默认值 > 原始 LLM 结果
+        weather_condition = None
+        if rule_result and getattr(rule_result, "weather_condition", None):
+            weather_condition = rule_result.weather_condition
+        else:
+            weather_condition = llm_parsed.get("weather_condition")
+
+        weather_summary = llm_parsed.get("weather_summary")
+        weather_detail = llm_parsed.get("weather_detail")
+        weather_confidence = llm_parsed.get("weather_confidence")
+        if weather_confidence is not None:
+            try:
+                weather_confidence = float(weather_confidence)
+            except (TypeError, ValueError):
+                weather_confidence = None
+        weather_evidence = llm_parsed.get("weather_evidence")
+
         llm_result = llm_parsed.get("result")
         if rule_result and rule_result.result:
             result = rule_result.result
@@ -316,6 +342,11 @@ class IntentClassifier:
             "reasoning": reasoning,
             "advice": advice or None,
             "safety_notice": safety_notice or None,
+            "weather_condition": weather_condition,
+            "weather_summary": weather_summary,
+            "weather_detail": weather_detail,
+            "weather_confidence": weather_confidence,
+            "weather_evidence": weather_evidence,
         }
 
         return function_analysis, intent_code

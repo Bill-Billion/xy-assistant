@@ -44,6 +44,9 @@ class DoubaoClient:
                 {"role": "system", "content": system_prompt},
                 *messages,
             ],
+            "thinking": {
+                "type": "disabled"
+            }
         }
         if response_format:
             payload["response_format"] = response_format
@@ -66,8 +69,10 @@ class DoubaoClient:
                 attempt += 1
 
         if last_exception:
-            raise last_exception
-        raise RuntimeError("LLM 调用失败且无异常信息")
+            logger.warning("LLM 多次调用失败，返回空结果", error=str(last_exception))
+        else:
+            logger.warning("LLM 调用失败且无异常信息，返回空结果")
+        return "", {}
 
     def _safe_parse_json(self, text: str) -> dict[str, Any]:
         """将模型返回的字符串解析为 JSON，不合法时记录日志并返回空字典。"""
