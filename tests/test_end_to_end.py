@@ -80,6 +80,7 @@ async def test_command_service_merges_advice_into_msg():
                 "clarify_message": "需要我为您提供更多健康建议还是帮您联系医生咨询呢？",
                 "need_clarify": True,
                 "confidence": 0.6,
+                "reply": "建议先适当休息，观察头晕情况。 小雅的建议仅供参考，如症状持续请及时咨询医生。 需要我为您提供更多健康建议还是帮您联系医生咨询呢？",
             }
         ]
     )
@@ -102,7 +103,7 @@ async def test_command_service_merges_advice_into_msg():
     assert response.function_analysis.advice is not None
     assert response.function_analysis.safety_notice is not None
     assert response.function_analysis.need_clarify is True
-    assert response.msg == "建议先适当休息，观察头晕情况。 小雅的建议仅供参考，如症状持续请及时咨询医生。 需要我为您提供更多健康建议还是帮您联系医生咨询呢？"
+    assert response.msg == "需要我为您提供更多健康建议还是帮您联系医生咨询呢？"
     assert response.requires_selection is True
 
 
@@ -112,11 +113,25 @@ async def test_alarm_template_message(monkeypatch):
         {
             "intent_code": "ALARM_CREATE",
             "result": "新增闹钟",
-            "target": "2024-09-20 18-00-00",
-            "event": None,
+            "target": "2024-09-20 18:00:00",
+            "event": "晚间提醒",
             "status": None,
             "confidence": 0.95,
-            "reply": "已经设置。",
+            "reply": "好的，我已为您设置今天18:00的闹钟。",
+            "intent_candidates": [
+                {
+                    "intent_code": "ALARM_CREATE",
+                    "result": "新增闹钟",
+                    "target": "2024-09-20 18:00:00",
+                    "parsed_time": "2024-09-20 18:00:00",
+                    "event": "晚间提醒",
+                    "event_confidence": 0.9,
+                    "status": "",
+                    "status_confidence": 0.0,
+                    "confidence": 0.95,
+                    "reason": "识别 18:00 闹钟",
+                }
+            ],
         }
     ])
     classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
@@ -149,7 +164,7 @@ async def test_close_music_template_message():
             "result": "关闭音乐",
             "target": "",
             "confidence": 0.9,
-            "reply": "正在关闭音乐。",
+            "reply": "好的，正在关闭音乐。",
         }
     ])
     classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
@@ -179,7 +194,21 @@ async def test_alarm_tomorrow_morning_message(monkeypatch):
             "event": "吃药",
             "status": None,
             "confidence": 0.95,
-            "reply": "好的",
+            "reply": "好的，我已为您设置明天09:00的闹钟。 提醒事项：吃药。",
+            "intent_candidates": [
+                {
+                    "intent_code": "ALARM_REMINDER",
+                    "result": "新增闹钟",
+                    "target": "2024-09-21 09:00:00",
+                    "parsed_time": "2024-09-21 09:00:00",
+                    "event": "吃药",
+                    "event_confidence": 0.9,
+                    "status": "",
+                    "status_confidence": 0.0,
+                    "confidence": 0.95,
+                    "reason": "识别明早9点提醒吃药",
+                }
+            ],
         }
     ])
     classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
@@ -215,9 +244,11 @@ async def test_user_candidate_resolution(monkeypatch):
             "reply": "好的，我会为您安排健康监测。",
         },
         {
-            "intent_code": "UNKNOWN",
-            "confidence": 0.4,
-            "reply": "让我确认一下。",
+            "intent_code": "HEALTH_MONITOR_GENERAL",
+            "result": "健康监测",
+            "target": "小杨",
+            "confidence": 0.9,
+            "reply": "好的，我已为小杨打开健康监测功能。",
         },
         {
             "match": "小杨",

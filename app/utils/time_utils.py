@@ -402,7 +402,10 @@ def extract_event(text: str) -> Optional[str]:
     cleaned = re.sub(_relative_pattern, "", cleaned)
     cleaned = re.sub(_time_pattern, "", cleaned)
     cleaned = cleaned.replace("每周", "").replace("每天", "")
-    cleaned = cleaned.replace("明天", "").replace("明早", "")
+    cleaned = cleaned.replace("今天", "").replace("明天", "").replace("明早", "")
+    cleaned = cleaned.replace("后天", "")
+    while cleaned and cleaned[0] in {"天", "日"}:
+        cleaned = cleaned[1:]
     cleaned = re.sub(r"的$", "", cleaned)
     cleaned = cleaned.strip()
     return cleaned or None

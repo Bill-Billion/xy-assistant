@@ -84,3 +84,13 @@ def test_derive_alarm_target_cleans_ding_ge():
     assert target == "2024-09-21 09:00:00"
     assert event is None
     assert status is None
+
+
+def test_extract_event_removes_relative_prefix():
+    base = datetime(2024, 9, 20, 14, 0, tzinfo=EAST_EIGHT)
+    query = "后天早上9点提醒我买火车票"
+    expr = extract_time_expression(query, base)
+    target, event, status = derive_alarm_target(query, base, expr)
+    assert target  # 解析出某个时间即可，由上层再结合 LLM 校正
+    assert event == "买火车票"
+    assert status is None

@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from datetime import timedelta
 from difflib import SequenceMatcher
+import re
 from time import perf_counter
 from typing import Any, Dict, List, Optional
 
@@ -58,6 +59,37 @@ ACTIONABLE_INTENTS = ACTIONABLE_HEALTH_INTENTS | ACTIONABLE_CONTACT_INTENTS | {
     IntentCode.ALARM_CREATE,
     IntentCode.ALARM_REMINDER,
     IntentCode.ALARM_VIEW,
+}
+
+# LLM 事件解析参数
+EVENT_CONFIDENCE_THRESHOLD = 0.6
+EVENT_MIN_LENGTH = 2
+EVENT_TIME_TOKENS = {
+    "今天",
+    "明天",
+    "后天",
+    "今早",
+    "明早",
+    "后早",
+    "上午",
+    "下午",
+    "晚上",
+    "早上",
+    "凌晨",
+    "傍晚",
+    "中午",
+    "夜里",
+    "当前",
+}
+EVENT_PREFIX_TOKENS = {
+    "提醒",
+    "帮我提醒",
+    "请提醒",
+    "帮我记得",
+    "让我记得",
+    "要记得",
+    "麻烦提醒",
+    "帮我",
 }
 
 # 规则优先映射：当大模型仅识别出泛化意图时，用于提升规则识别的细分意图。
@@ -204,7 +236,7 @@ class IntentClassifier:
             query=query,
             function_analysis=function_analysis,
         )
-        alarm_reply_hint = await self._ensure_alarm_target(
+        alarm_reply_hint = await self._ensure_alarm_details(
             query=query,
             function_analysis=function_analysis,
         )
@@ -289,15 +321,31 @@ class IntentClassifier:
                 continue
             candidate_result = (item.get("result") or candidate_definition.result or "").strip()
             candidate_target = (item.get("target") or "").strip()
+            candidate_parsed_time = (item.get("parsed_time") or "").strip()
+            candidate_event = (item.get("event") or "").strip()
+            candidate_status = (item.get("status") or "").strip()
             candidate_reason = (item.get("reason") or item.get("reasoning") or "").strip()
             try:
                 candidate_conf = float(item.get("confidence", 0) or 0)
             except (TypeError, ValueError):
                 candidate_conf = 0.0
+            try:
+                candidate_event_conf = float(item.get("event_confidence", 0) or 0)
+            except (TypeError, ValueError):
+                candidate_event_conf = 0.0
+            try:
+                candidate_status_conf = float(item.get("status_confidence", 0) or 0)
+            except (TypeError, ValueError):
+                candidate_status_conf = 0.0
             candidate_entry = {
                 "intent_code": candidate_code,
                 "result": candidate_result,
                 "target": candidate_target,
+                "parsed_time": candidate_parsed_time,
+                "event": candidate_event,
+                "event_confidence": max(0.0, min(candidate_event_conf, 1.0)),
+                "status": candidate_status,
+                "status_confidence": max(0.0, min(candidate_status_conf, 1.0)),
                 "confidence": max(0.0, min(candidate_conf, 1.0)),
                 "reason": candidate_reason,
             }
@@ -385,21 +433,59 @@ class IntentClassifier:
         else:
             result = llm_result or ""
 
+        candidate_parsed_time = None
         if selected_candidate:
+            candidate_parsed_time = (selected_candidate.get("parsed_time") or "").strip()
             target = selected_candidate.get("target", "") or ""
+            if not target and candidate_parsed_time:
+                target = candidate_parsed_time
         else:
             target = llm_parsed.get("target") or ""
+            candidate_parsed_time = (llm_parsed.get("parsed_time") or "").strip()
+            if not target and candidate_parsed_time:
+                target = candidate_parsed_time
         if isinstance(target, str):
             target = target.strip()
         if (not target) and rule_result and rule_result.target is not None:
             target = rule_result.target
 
         # 事件/状态主要用于闹钟提醒。
-        event = llm_parsed.get("event")
-        status = llm_parsed.get("status")
-        if event is None and rule_result:
-            event = rule_result.event
-        if status is None and rule_result:
+        event_source = "none"
+        candidate_event = None
+        candidate_event_conf = 0.0
+        candidate_status = None
+        candidate_status_conf = 0.0
+        if selected_candidate:
+            candidate_event = selected_candidate.get("event") or ""
+            candidate_event_conf = selected_candidate.get("event_confidence", 0.0) or 0.0
+            candidate_status = selected_candidate.get("status") or ""
+            candidate_status_conf = selected_candidate.get("status_confidence", 0.0) or 0.0
+
+        event = None
+        if candidate_event:
+            sanitized = self._sanitize_event_text(candidate_event)
+            if candidate_event_conf >= EVENT_CONFIDENCE_THRESHOLD and self._validate_event_text(sanitized):
+                event = sanitized
+                event_source = "llm"
+
+        if event is None and llm_parsed.get("event"):
+            sanitized = self._sanitize_event_text(llm_parsed.get("event") or "")
+            if self._validate_event_text(sanitized):
+                event = sanitized
+                event_source = "llm"
+
+        if event is None and rule_result and rule_result.event:
+            sanitized = self._sanitize_event_text(rule_result.event)
+            if self._validate_event_text(sanitized):
+                event = sanitized
+                event_source = "rule"
+
+        status = None
+        if candidate_status and candidate_status_conf >= 0.5:
+            status = candidate_status
+        elif llm_parsed.get("status"):
+            status = (llm_parsed.get("status") or "").strip()
+        elif rule_result and rule_result.status:
             status = rule_result.status
 
         if selected_candidate:
@@ -442,6 +528,8 @@ class IntentClassifier:
                 )
             else:
                 reasoning_parts.append(f"rule_override={rule_result.intent_code.value}")
+        if event_source != "none":
+            reasoning_parts.append(f"event_source={event_source}")
         advice = (llm_parsed.get("advice") or "").strip()
         safety_notice = (llm_parsed.get("safety_notice") or "").strip()
 
@@ -521,9 +609,46 @@ class IntentClassifier:
             "rule_promoted": rule_promoted,
             "llm_top_intent": llm_top_candidate_code.value if llm_top_candidate_code else None,
             "llm_top_result": llm_top_candidate_result,
+            "event_source": event_source,
         }
 
         return function_analysis, intent_code, merge_meta
+
+    def _sanitize_event_text(self, text: Optional[str]) -> str:
+        if not text:
+            return ""
+        cleaned = str(text).strip()
+        for token in sorted(EVENT_PREFIX_TOKENS, key=len, reverse=True):
+            if cleaned.startswith(token):
+                cleaned = cleaned[len(token):].lstrip()
+                break
+        changed = True
+        while cleaned and changed:
+            changed = False
+            for token in sorted(EVENT_TIME_TOKENS, key=len, reverse=True):
+                if cleaned.startswith(token):
+                    cleaned = cleaned[len(token):].lstrip()
+                    changed = True
+        cleaned = cleaned.lstrip("，,。.:：;；的 和")
+        cleaned = cleaned.rstrip("，,。.:：;； ")
+        return cleaned.strip()
+
+    def _validate_event_text(self, text: Optional[str]) -> bool:
+        if not text:
+            return False
+        stripped = text.strip()
+        if len(stripped) < EVENT_MIN_LENGTH:
+            return False
+        if stripped in EVENT_TIME_TOKENS:
+            return False
+        if stripped in EVENT_PREFIX_TOKENS:
+            return False
+        for token in EVENT_TIME_TOKENS:
+            if stripped.startswith(token) and len(stripped) <= len(token) + 1:
+                return False
+        if not any("\u4e00" <= ch <= "\u9fff" or ch.isalpha() for ch in stripped):
+            return False
+        return True
 
     def _should_promote_rule_candidate(
         self,
@@ -728,24 +853,36 @@ class IntentClassifier:
         reasoning = function_analysis.get("reasoning")
         function_analysis["reasoning"] = f"{reasoning}；{marker}" if reasoning else marker
 
-    async def _ensure_alarm_target(
+    async def _ensure_alarm_details(
         self,
         query: str,
         function_analysis: Dict[str, Any],
     ) -> Optional[str]:
         if (function_analysis.get("result") or "").strip() != "新增闹钟":
             return None
-        if (function_analysis.get("target") or "").strip():
-            return None
         if not self._llm_client:
             return None
 
-        fallback_target, fallback_event, fallback_reply = await self._parse_alarm_with_llm(query)
-        if not fallback_target:
+        existing_target = (function_analysis.get("target") or "").strip()
+        existing_event = (function_analysis.get("event") or "").strip()
+
+        need_llm = False
+        if not existing_target:
+            need_llm = True
+        if not self._validate_event_text(existing_event):
+            need_llm = True
+
+        if not need_llm:
             return None
 
-        function_analysis["target"] = fallback_target
-        if fallback_event and not function_analysis.get("event"):
+        fallback_target, fallback_event, fallback_event_conf, fallback_reply = await self._parse_alarm_with_llm(query)
+        if not fallback_target and not fallback_event:
+            return None
+
+        if fallback_target and not existing_target:
+            function_analysis["target"] = fallback_target
+
+        if fallback_event and fallback_event_conf >= EVENT_CONFIDENCE_THRESHOLD:
             function_analysis["event"] = fallback_event
 
         existing_confidence = function_analysis.get("confidence")
@@ -755,19 +892,24 @@ class IntentClassifier:
             numeric_conf = 0.0
         function_analysis["confidence"] = max(numeric_conf, 0.75)
 
-        marker = "alarm_target=llm"
+        marker = "alarm_details=llm"
         reasoning = function_analysis.get("reasoning")
         function_analysis["reasoning"] = f"{reasoning}；{marker}" if reasoning else marker
         return fallback_reply
 
-    async def _parse_alarm_with_llm(self, query: str) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    async def _parse_alarm_with_llm(
+        self,
+        query: str,
+    ) -> tuple[Optional[str], Optional[str], float, Optional[str]]:
         base_time = now_e8()
         payload = {
             "current_time": base_time.strftime("%Y-%m-%d %H:%M:%S%z"),
             "query": query,
             "instruction": (
-                "解析提醒中的相对时间，返回 JSON："
-                '{"days":0,"hours":0,"minutes":10,"seconds":0,"event":"事件","confidence":0.9}。'
+                "请解析提醒/闹钟语句，输出 JSON："
+                '{"target_iso":"2024-09-21 09:00:00","event":"买火车票","event_confidence":0.9,'
+                '"status":"每周三","status_confidence":0.5,"confidence":0.92,'
+                '"reply":"好的，我会在后天早上9点提醒您买火车票。"}。'
                 "若无法确定，返回 {\"confidence\":0}。"
             ),
         }
@@ -775,8 +917,9 @@ class IntentClassifier:
             {
                 "role": "system",
                 "content": (
-                    "你是时间解析助手，根据当前时间和用户指令，输出提醒的时间间隔（天/小时/分钟/秒）"
-                    "并提炼提醒事项 event，只能输出 JSON。"
+                    "你是时间解析助手，根据当前时间和用户指令，输出提醒的结构化信息。"
+                    "必须仅返回 JSON，包含 target_iso、event、event_confidence、status、status_confidence、confidence、reply 字段。"
+                    "若无法解析，请返回 {\"confidence\":0}。"
                 ),
             },
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
@@ -790,35 +933,47 @@ class IntentClassifier:
             )
         except Exception as exc:  # noqa: BLE001
             logger.debug("alarm llm parse failed", error=str(exc))
-            return None, None, None
+            return None, None, 0.0, None
 
         if not isinstance(parsed, dict):
-            return None, None, None
+            return None, None, 0.0, None
 
         try:
             confidence = float(parsed.get("confidence", 0) or 0)
         except (TypeError, ValueError):
             confidence = 0.0
         if confidence < 0.6:
-            return None, None, None
+            return None, None, 0.0, None
 
+        target_iso = (parsed.get("target_iso") or parsed.get("target") or "").strip()
+        if not target_iso:
+            try:
+                days = float(parsed.get("days", 0) or 0)
+                hours = float(parsed.get("hours", 0) or 0)
+                minutes = float(parsed.get("minutes", 0) or 0)
+                seconds = float(parsed.get("seconds", 0) or 0)
+            except (TypeError, ValueError):
+                days = hours = minutes = seconds = 0.0
+            delta = timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
+            if timedelta(0) < delta < timedelta(days=365 * 5):
+                reminder_time = (base_time + delta).astimezone(EAST_EIGHT)
+                target_iso = reminder_time.strftime("%Y-%m-%d %H:%M:%S")
+
+        if target_iso and re.match(r"^\d{4}-\d{2}-\d{2} \d{2}[:\-]\d{2}[:\-]\d{2}$", target_iso):
+            target_iso = target_iso.replace("-", ":", 2) if target_iso.count("-") > 2 else target_iso
+
+        event_raw = (parsed.get("event") or "").strip()
         try:
-            days = float(parsed.get("days", 0) or 0)
-            hours = float(parsed.get("hours", 0) or 0)
-            minutes = float(parsed.get("minutes", 0) or 0)
-            seconds = float(parsed.get("seconds", 0) or 0)
+            event_confidence = float(parsed.get("event_confidence", 0) or 0)
         except (TypeError, ValueError):
-            return None, None, None
+            event_confidence = 0.0
+        sanitized_event = self._sanitize_event_text(event_raw)
+        if not self._validate_event_text(sanitized_event) or event_confidence < EVENT_CONFIDENCE_THRESHOLD:
+            sanitized_event = None
 
-        delta = timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
-        if delta <= timedelta(0) or delta > timedelta(days=365 * 5):
-            return None, None, None
-
-        reminder_time = (base_time + delta).astimezone(EAST_EIGHT)
-        target = reminder_time.strftime("%Y-%m-%d %H-%M-%S")
-        event = (parsed.get("event") or "").strip() or None
         reply_hint = (parsed.get("reply") or "").strip() or None
-        return target, event, reply_hint
+
+        return target_iso or None, sanitized_event, event_confidence, reply_hint
 
     def _resolve_intent_code(
         self,

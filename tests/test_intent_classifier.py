@@ -35,13 +35,22 @@ def fixed_now(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_classifier_uses_rule_for_alarm():
-    fake_llm = FakeDoubaoClient(
+    fake_llm = FakeDoubaoClient([
         {
             "reply": "好的，为您设置闹钟。",
             "intent_code": "UNKNOWN",
             "confidence": 0.3,
-        }
-    )
+        },
+        {
+            "confidence": 0.95,
+            "target_iso": "2024-09-20 18:00:00",
+            "event": "",
+            "event_confidence": 0.0,
+            "status": "",
+            "status_confidence": 0.0,
+            "reply": "好的，我会在今天18:00提醒您。",
+        },
+    ])
     classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
     state = ConversationState(session_id="abc")
     result = await classifier.classify(
@@ -186,12 +195,24 @@ async def test_classifier_prefers_llm_candidates_over_rules():
                     "intent_code": "HEALTH_EDUCATION",
                     "result": "健康科普",
                     "target": "高血压日常饮食",
+                    "parsed_time": "",
+                    "event": "",
+                    "event_confidence": 0.0,
+                    "status": "",
+                    "status_confidence": 0.0,
                     "confidence": 0.82,
                     "reason": "询问饮食建议，属于健康知识类",
+                    "reply_hint": "科普饮食建议",
                 },
                 {
                     "intent_code": "HEALTH_MONITOR_BLOOD_PRESSURE",
                     "result": "血压监测",
+                    "target": "",
+                    "parsed_time": "",
+                    "event": "",
+                    "event_confidence": 0.0,
+                    "status": "",
+                    "status_confidence": 0.0,
                     "confidence": 0.2,
                     "reason": "包含血压关键词但未表达监测需求",
                 },
@@ -247,6 +268,12 @@ async def test_classifier_promotes_rule_specific_monitor_when_llm_generic():
             {
                 "intent_code": "HEALTH_MONITOR_GENERAL",
                 "result": "健康监测",
+                "target": "",
+                "parsed_time": "",
+                "event": "",
+                "event_confidence": 0.0,
+                "status": "",
+                "status_confidence": 0.0,
                 "confidence": 1.0,
                 "reason": "模型给出泛化健康监测意图",
             }
@@ -302,6 +329,12 @@ async def test_classifier_promotes_rule_for_doctor_contact():
             {
                 "intent_code": "FAMILY_DOCTOR_GENERAL",
                 "result": "家庭医生",
+                "target": "",
+                "parsed_time": "",
+                "event": "",
+                "event_confidence": 0.0,
+                "status": "",
+                "status_confidence": 0.0,
                 "confidence": 0.92,
                 "reason": "模型识别为泛化家庭医生功能",
             }
@@ -356,11 +389,11 @@ async def test_classifier_reply_fallback_when_missing():
         },
         {
             "confidence": 0.9,
-            "days": 0,
-            "hours": 19,
-            "minutes": 0,
-            "seconds": 0,
+            "target_iso": "2024-09-21 09:00:00",
             "event": "喝水",
+            "event_confidence": 0.9,
+            "status": "",
+            "status_confidence": 0.0,
             "reply": "好的，我将在明早9点提醒您喝水。",
         },
     ])
@@ -374,8 +407,9 @@ async def test_classifier_reply_fallback_when_missing():
     )
 
     assert outcome.function_analysis["result"] == "新增闹钟"
+    assert outcome.function_analysis["event"] == "喝水"
     assert outcome.reply_message  # fallback 给出的消息不应为空
-    assert "闹钟" in outcome.reply_message
+    assert "喝水" in outcome.reply_message
 
 
 @pytest.mark.asyncio
@@ -405,3 +439,48 @@ async def test_reasoning_deduplicated():
 
     reasoning = outcome.function_analysis.get("reasoning") or ""
     assert reasoning.count(repeated_text) == 1
+
+
+@pytest.mark.asyncio
+async def test_alarm_event_from_llm_override_rule():
+    fake_llm = FakeDoubaoClient([
+        {
+            "intent_candidates": [
+                {
+                    "intent_code": "ALARM_CREATE",
+                    "result": "新增闹钟",
+                    "target": "2024-11-26 09:00:00",
+                    "parsed_time": "2024-11-26 09:00:00",
+                    "event": "提醒妈妈生日",
+                    "event_confidence": 0.55,
+                    "status": "",
+                    "status_confidence": 0.0,
+                    "confidence": 0.85,
+                    "reason": "识别为闹钟设置",
+                }
+            ],
+            "reply": "好的，我已经为您设置闹钟。",
+        },
+        {
+            "confidence": 0.92,
+            "target_iso": "2024-11-26 09:00:00",
+            "event": "妈妈生日",
+            "event_confidence": 0.95,
+            "status": "",
+            "status_confidence": 0.0,
+            "reply": "好的，我会在11月26日上午9点提醒您妈妈生日。",
+        },
+    ])
+
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    state = ConversationState(session_id="alarm-event")
+    outcome = await classifier.classify(
+        session_id="alarm-event",
+        query="定个十一月二十六的闹钟提醒我妈妈生日",
+        meta={},
+        conversation_state=state,
+    )
+
+    assert outcome.function_analysis["result"] == "新增闹钟"
+    assert outcome.function_analysis["event"] == "妈妈生日"
+    assert "alarm_details=llm" in (outcome.function_analysis["reasoning"] or "")
