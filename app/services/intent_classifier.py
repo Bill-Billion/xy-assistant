@@ -167,6 +167,7 @@ class IntentClassifier:
 
         llm_response_text = ""
         llm_parsed: dict[str, Any] = {}
+        llm_reply: str = ""
         try:
             # 汇总对话历史，保证模型理解当前上下文。
             messages = conversation_state.as_messages()
@@ -180,6 +181,8 @@ class IntentClassifier:
                 messages=messages,
                 response_format={"type": "json_object"},
             )
+            if isinstance(llm_parsed, dict):
+                llm_reply = (llm_parsed.get("reply") or "").strip()
             logger.debug(
                 "timing intent_classifier",
                 step="primary_llm",
@@ -189,7 +192,7 @@ class IntentClassifier:
         except Exception as exc:  # noqa: BLE001
             logger.exception("LLM 调用失败，采用规则兜底", error=str(exc))
 
-        function_analysis, intent_code = self._merge_results(rule_result, llm_parsed, query)
+        function_analysis, intent_code, merge_meta = self._merge_results(rule_result, llm_parsed, query)
         await self._resolve_user_target(
             query=query,
             function_analysis=function_analysis,
@@ -201,16 +204,14 @@ class IntentClassifier:
             query=query,
             function_analysis=function_analysis,
         )
-        await self._ensure_alarm_target(
+        alarm_reply_hint = await self._ensure_alarm_target(
             query=query,
             function_analysis=function_analysis,
         )
 
-        reply_message = (
-            llm_parsed.get("reply")
-            or function_analysis.get("clarify_message")
-            or self._default_reply(function_analysis)
-        )
+        reply_message = llm_reply or ""
+        if not reply_message and alarm_reply_hint:
+            reply_message = alarm_reply_hint
 
         if self._should_clarify(function_analysis):
             function_analysis["need_clarify"] = True
@@ -222,12 +223,16 @@ class IntentClassifier:
                 reply_message = clarify_message
         else:
             function_analysis.setdefault("need_clarify", False)
+            if not reply_message:
+                reply_message = self._default_reply(function_analysis)
 
         logger.info(
             "classification completed",
             session_id=session_id,
             function_analysis=function_analysis,
             llm_parsed=llm_parsed,
+            reply_source="llm" if llm_reply else "fallback",
+            merge_meta=merge_meta,
         )
 
         return ClassificationResult(
@@ -264,7 +269,7 @@ class IntentClassifier:
         rule_result: Optional[RuleResult],
         llm_parsed: Dict[str, Any],
         query: str,
-    ) -> tuple[Dict[str, Any], IntentCode]:
+    ) -> tuple[Dict[str, Any], IntentCode, Dict[str, Any]]:
         """合并规则结果与大模型 JSON，并执行后置校验与补全。"""
         # 1. 规范化大模型候选列表，方便与规则结果做精度比较。
         llm_parsed = llm_parsed or {}
@@ -299,9 +304,13 @@ class IntentClassifier:
             candidate_entries.append(candidate_entry)
 
         selected_candidate: dict[str, Any] | None = None
+        llm_top_candidate_code: IntentCode | None = None
+        llm_top_candidate_result: Optional[str] = None
         if candidate_entries:
             candidate_entries.sort(key=lambda c: c["confidence"], reverse=True)
             top_candidate = candidate_entries[0]
+            llm_top_candidate_code = top_candidate["intent_code"]
+            llm_top_candidate_result = top_candidate.get("result", "")
             selected_candidate = {
                 "intent_code": top_candidate["intent_code"],
                 "result": top_candidate.get("result", ""),
@@ -313,6 +322,7 @@ class IntentClassifier:
         # 2. 将规则识别的结果转换为候选，必要时用于纠偏。
         rule_promoted = False
         rule_candidate: dict[str, Any] | None = None
+        override_from_code: Optional[IntentCode] = None
         if rule_result:
             rule_conf = rule_result.confidence
             try:
@@ -328,6 +338,8 @@ class IntentClassifier:
             }
 
         if self._should_promote_rule_candidate(selected_candidate, rule_result):
+            if selected_candidate:
+                override_from_code = selected_candidate.get("intent_code")
             selected_candidate = rule_candidate
             rule_promoted = True
         elif not selected_candidate and rule_candidate:
@@ -424,11 +436,26 @@ class IntentClassifier:
         if raw_result and raw_result != result:
             reasoning_parts.append(f"LLM_suggested_result={raw_result}")
         if rule_promoted and rule_result:
-            reasoning_parts.append(f"rule_override={rule_result.intent_code.value}")
+            if override_from_code and override_from_code != rule_result.intent_code:
+                reasoning_parts.append(
+                    f"rule_override={rule_result.intent_code.value}<-{override_from_code.value}"
+                )
+            else:
+                reasoning_parts.append(f"rule_override={rule_result.intent_code.value}")
         advice = (llm_parsed.get("advice") or "").strip()
         safety_notice = (llm_parsed.get("safety_notice") or "").strip()
 
-        reasoning = "；".join(reasoning_parts) or None
+        normalized_reasoning: list[str] = []
+        seen_reasoning: set[str] = set()
+        for part in reasoning_parts:
+            cleaned_part = (part or "").strip()
+            if not cleaned_part:
+                continue
+            if cleaned_part in seen_reasoning:
+                continue
+            seen_reasoning.add(cleaned_part)
+            normalized_reasoning.append(cleaned_part)
+        reasoning = "；".join(normalized_reasoning) or None
 
         is_health = self._is_health_related(query, advice, result)
         if is_health and intent_code not in ACTIONABLE_INTENTS and not safety_notice:
@@ -490,7 +517,13 @@ class IntentClassifier:
             "weather_evidence": weather_evidence,
         }
 
-        return function_analysis, intent_code
+        merge_meta = {
+            "rule_promoted": rule_promoted,
+            "llm_top_intent": llm_top_candidate_code.value if llm_top_candidate_code else None,
+            "llm_top_result": llm_top_candidate_result,
+        }
+
+        return function_analysis, intent_code, merge_meta
 
     def _should_promote_rule_candidate(
         self,
@@ -699,17 +732,17 @@ class IntentClassifier:
         self,
         query: str,
         function_analysis: Dict[str, Any],
-    ) -> None:
+    ) -> Optional[str]:
         if (function_analysis.get("result") or "").strip() != "新增闹钟":
-            return
+            return None
         if (function_analysis.get("target") or "").strip():
-            return
+            return None
         if not self._llm_client:
-            return
+            return None
 
-        fallback_target, fallback_event = await self._parse_alarm_with_llm(query)
+        fallback_target, fallback_event, fallback_reply = await self._parse_alarm_with_llm(query)
         if not fallback_target:
-            return
+            return None
 
         function_analysis["target"] = fallback_target
         if fallback_event and not function_analysis.get("event"):
@@ -725,8 +758,9 @@ class IntentClassifier:
         marker = "alarm_target=llm"
         reasoning = function_analysis.get("reasoning")
         function_analysis["reasoning"] = f"{reasoning}；{marker}" if reasoning else marker
+        return fallback_reply
 
-    async def _parse_alarm_with_llm(self, query: str) -> tuple[Optional[str], Optional[str]]:
+    async def _parse_alarm_with_llm(self, query: str) -> tuple[Optional[str], Optional[str], Optional[str]]:
         base_time = now_e8()
         payload = {
             "current_time": base_time.strftime("%Y-%m-%d %H:%M:%S%z"),
@@ -756,17 +790,17 @@ class IntentClassifier:
             )
         except Exception as exc:  # noqa: BLE001
             logger.debug("alarm llm parse failed", error=str(exc))
-            return None, None
+            return None, None, None
 
         if not isinstance(parsed, dict):
-            return None, None
+            return None, None, None
 
         try:
             confidence = float(parsed.get("confidence", 0) or 0)
         except (TypeError, ValueError):
             confidence = 0.0
         if confidence < 0.6:
-            return None, None
+            return None, None, None
 
         try:
             days = float(parsed.get("days", 0) or 0)
@@ -774,16 +808,17 @@ class IntentClassifier:
             minutes = float(parsed.get("minutes", 0) or 0)
             seconds = float(parsed.get("seconds", 0) or 0)
         except (TypeError, ValueError):
-            return None, None
+            return None, None, None
 
         delta = timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
         if delta <= timedelta(0) or delta > timedelta(days=365 * 5):
-            return None, None
+            return None, None, None
 
         reminder_time = (base_time + delta).astimezone(EAST_EIGHT)
         target = reminder_time.strftime("%Y-%m-%d %H-%M-%S")
         event = (parsed.get("event") or "").strip() or None
-        return target, event
+        reply_hint = (parsed.get("reply") or "").strip() or None
+        return target, event, reply_hint
 
     def _resolve_intent_code(
         self,

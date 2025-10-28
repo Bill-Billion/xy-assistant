@@ -29,7 +29,7 @@ def test_derive_alarm_target_for_ambiguous_six():
     base = datetime(2024, 9, 20, 14, 0, tzinfo=EAST_EIGHT)
     expr = extract_time_expression("帮我订个6点的闹钟", base)
     target, event, status = derive_alarm_target("帮我订个6点的闹钟", base, expr)
-    assert target == "2024-09-20 18-00-00"
+    assert target == "2024-09-20 18:00:00"
     assert event is None
     assert status is None
 
@@ -39,7 +39,7 @@ def test_relative_reminder():
     query = "提醒我10分钟后煮饭"
     expr = extract_time_expression(query, base)
     target, event, status = derive_alarm_target(query, base, expr)
-    assert target == "2024-09-20 14-10-00"
+    assert target == "2024-09-20 14:10:00"
     assert event == "煮饭"
     assert status is None
 
@@ -49,7 +49,7 @@ def test_tomorrow_morning_alarm():
     query = "明早9点提醒我吃药"
     expr = extract_time_expression(query, base)
     target, event, status = derive_alarm_target(query, base, expr)
-    assert target == "2024-09-21 09-00-00"
+    assert target == "2024-09-21 09:00:00"
     assert event == "吃药"
     assert status is None
 
@@ -60,7 +60,7 @@ def test_relative_chinese_numeral():
     expr = extract_time_expression(query, base)
     assert expr and expr.relative_delta == timedelta(minutes=10)
     target, event, status = derive_alarm_target(query, base, expr)
-    assert target == "2024-09-20 14-10-00"
+    assert target == "2024-09-20 14:10:00"
     assert event == "喝水"
     assert status is None
 
@@ -71,5 +71,16 @@ def test_relative_half_hour():
     expr = extract_time_expression(query, base)
     assert expr and expr.relative_delta == timedelta(minutes=30)
     target, event, status = derive_alarm_target(query, base, expr)
-    assert target == "2024-09-20 14-30-00"
+    assert target == "2024-09-20 14:30:00"
     assert event == "拉伸"
+    assert status is None
+
+
+def test_derive_alarm_target_cleans_ding_ge():
+    base = datetime(2024, 9, 20, 14, 0, tzinfo=EAST_EIGHT)
+    query = "定个明早9点的闹钟"
+    expr = extract_time_expression(query, base)
+    target, event, status = derive_alarm_target(query, base, expr)
+    assert target == "2024-09-21 09:00:00"
+    assert event is None
+    assert status is None

@@ -398,7 +398,7 @@ def extract_event(text: str) -> Optional[str]:
     """从提醒语句中抽取事件关键词。"""
     cleaned = _normalize_time_phrases(text)
     cleaned = re.sub(r"提醒(我)?", "", cleaned)
-    cleaned = re.sub(r"(闹钟|设定|设置|帮我|一下|一个|请|安排|订个?)", "", cleaned)
+    cleaned = re.sub(r"(闹钟|设定|设置|帮我|一下|一个|请|安排|订个?|定个?)", "", cleaned)
     cleaned = re.sub(_relative_pattern, "", cleaned)
     cleaned = re.sub(_time_pattern, "", cleaned)
     cleaned = cleaned.replace("每周", "").replace("每天", "")

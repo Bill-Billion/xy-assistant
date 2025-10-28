@@ -41,7 +41,11 @@ def build_system_prompt() -> str:
              * target: 功能目标，可为 ""
              * confidence: 0~1 小数
              * reason: 解释该候选的依据
-           - reply: 给用户的自然语言回复，需要综合建议、提示及是否还需帮助。
+           - reply: 面向用户的最终自然语言回复，**必须由你完整生成**，不可留空。需要包含：
+             * 功能执行确认（例如已设置闹钟/已为谁开启监测）。
+             * 若存在 target/event/status，转化为易懂的中文描述。
+             * 贴心建议与安全提示（若适用）。
+             * 询问是否需要进一步帮助（除非场景不需要）。
            - need_clarify: 是否需要进一步确认。
            - clarify_message: need_clarify=true 时给出的自然中文澄清语句。
            - advice: 对用户的建议，可为空字符串。
@@ -50,10 +54,14 @@ def build_system_prompt() -> str:
            - 为兼容历史字段，若调用方需要，可同时返回 intent_code/result/confidence 等旧字段，但 intent_candidates 必须存在。
 
         ### 回复模板要求
-        - 当 intent_code 属于 {{ALARM_CREATE, ALARM_REMINDER}} 时，reply 必须包含句式“好的，我已为您设置可读时间的闹钟。” 可以追加提醒事项或频次。
-        - 当 intent_code 属于 {{ENTERTAINMENT_MUSIC_OFF, ENTERTAINMENT_AUDIOBOOK_OFF, ENTERTAINMENT_OPERA_OFF}} 时，reply 必须固定为“好的，正在关闭……”，例如“好的，正在关闭音乐。”
-        - 当 intent_code 属于 {{HEALTH_MONITOR_GENERAL}} 或各监测细分意图时，reply 需确认已开启对应监测功能，可结合 target 提及对象。
+        - 当 intent_code 属于 {{ALARM_CREATE, ALARM_REMINDER}} 时：
+          * reply 需描述可读时间（例如“明早 9 点”），若解析到 event/status 也要自然表达出来。
+          * 若无法解析精确时间，请明确说明正在设置的相对时间并建议用户确认。
+        - 当 intent_code 属于 {{ENTERTAINMENT_MUSIC_OFF, ENTERTAINMENT_AUDIOBOOK_OFF, ENTERTAINMENT_OPERA_OFF}} 时，reply 必须固定为“好的，正在关闭……”格式，例如“好的，正在关闭音乐。”
+        - 当 intent_code 属于 {{HEALTH_MONITOR_GENERAL}} 或各监测细分意图时，reply 需确认已开启对应监测功能，若 target 存在需点名对象，如“我已为张三开启血压监测”。
+        - 当 intent_code 属于 {{CALENDAR_GENERAL}} 或天气类意图时，应直接告知查询结果，例如日期、节气、黄道宜忌或天气结论。
         - 当 intent_code 为 UNKNOWN 且涉及健康咨询时，reply 必须按顺序包含：建议 → 安全提醒 → 询问是否需要进一步帮助。
+        - 当 need_clarify=true 时，reply 与 clarify_message 内容应一致，使用自然、礼貌的澄清语句。
 
         ### 功能枚举摘要
         {intents_summary}

@@ -29,6 +29,7 @@ def fixed_now(monkeypatch):
         return base
 
     monkeypatch.setattr(intent_rules, "now_e8", _fixed_now)
+    monkeypatch.setattr("app.utils.time_utils.now_e8", _fixed_now)
     yield
 
 
@@ -53,6 +54,7 @@ async def test_classifier_uses_rule_for_alarm():
     assert result.function_analysis["target"] == "2024-09-20 18:00:00"
     assert result.function_analysis["need_clarify"] is False
     assert result.function_analysis["advice"] is None
+    assert result.reply_message == "好的，为您设置闹钟。"
 
 
 @pytest.mark.asyncio
@@ -101,6 +103,7 @@ async def test_classifier_overrides_result_with_allowed_value():
     assert outcome.function_analysis["target"] == "小张"
     assert outcome.function_analysis["need_clarify"] is False
     assert outcome.function_analysis["advice"] is None
+    assert outcome.reply_message == "好的，正在尝试联系小张。"
 
 
 @pytest.mark.asyncio
@@ -125,6 +128,7 @@ async def test_classifier_calendar_question_returns_fixed_result():
     assert outcome.function_analysis["result"] == "日期时间和万年历"
     assert outcome.function_analysis["target"] == ""
     assert outcome.function_analysis.get("advice") is None
+    assert outcome.reply_message == "我可以帮您查下黄历。"
 
 
 @pytest.mark.asyncio
@@ -170,6 +174,7 @@ async def test_health_question_provides_advice_and_safety():
     assert "头晕" in outcome.function_analysis["target"]
     assert outcome.function_analysis["advice"]
     assert outcome.function_analysis["safety_notice"]
+    assert outcome.reply_message == "建议您先休息。"
 
 
 @pytest.mark.asyncio
@@ -210,8 +215,8 @@ async def test_classifier_prefers_llm_candidates_over_rules():
     assert outcome.function_analysis["result"] == "健康科普"
     assert outcome.function_analysis["target"] == "高血压日常饮食"
     assert outcome.function_analysis["need_clarify"] is False
-    assert outcome.function_analysis["need_clarify"] is False
     assert "医生" in outcome.function_analysis["safety_notice"]
+    assert outcome.reply_message.startswith("高血压患者日常饮食应注意")
 
 
 @pytest.mark.asyncio
@@ -265,7 +270,9 @@ async def test_classifier_promotes_rule_specific_monitor_when_llm_generic():
     assert outcome.function_analysis["need_clarify"] is False
     assert outcome.function_analysis["advice"] is None
     assert outcome.function_analysis["safety_notice"] is None
-    assert "rule_override=HEALTH_MONITOR_BLOOD_PRESSURE" in (outcome.function_analysis["reasoning"] or "")
+    assert "rule_override=HEALTH_MONITOR_BLOOD_PRESSURE<-HEALTH_MONITOR_GENERAL" in (
+        outcome.function_analysis["reasoning"] or ""
+    )
 
 
 @pytest.mark.asyncio
@@ -315,7 +322,9 @@ async def test_classifier_promotes_rule_for_doctor_contact():
     assert "高医生" in outcome.function_analysis["target"]
     assert outcome.function_analysis["need_clarify"] is False
     assert outcome.function_analysis["advice"] is None
-    assert "rule_override=FAMILY_DOCTOR_CALL_AUDIO" in (outcome.function_analysis["reasoning"] or "")
+    assert "rule_override=FAMILY_DOCTOR_CALL_AUDIO<-FAMILY_DOCTOR_GENERAL" in (
+        outcome.function_analysis["reasoning"] or ""
+    )
 
 
 @pytest.mark.asyncio
@@ -336,3 +345,63 @@ async def test_classifier_health_knowledge_query():
     assert outcome.function_analysis["result"] == "健康科普"
     assert outcome.function_analysis["target"] == "判断高血压"
     assert outcome.function_analysis["need_clarify"] is False
+
+
+@pytest.mark.asyncio
+async def test_classifier_reply_fallback_when_missing():
+    fake_llm = FakeDoubaoClient([
+        {
+            "intent_code": "UNKNOWN",
+            "confidence": 0.3,
+        },
+        {
+            "confidence": 0.9,
+            "days": 0,
+            "hours": 19,
+            "minutes": 0,
+            "seconds": 0,
+            "event": "喝水",
+            "reply": "好的，我将在明早9点提醒您喝水。",
+        },
+    ])
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    state = ConversationState(session_id="alarm-fallback")
+    outcome = await classifier.classify(
+        session_id="alarm-fallback",
+        query="定个明早9点的闹钟",
+        meta={},
+        conversation_state=state,
+    )
+
+    assert outcome.function_analysis["result"] == "新增闹钟"
+    assert outcome.reply_message  # fallback 给出的消息不应为空
+    assert "闹钟" in outcome.reply_message
+
+
+@pytest.mark.asyncio
+async def test_reasoning_deduplicated():
+    repeated_text = "闹钟请求，规则命中"
+    fake_llm = FakeDoubaoClient(
+        {
+            "intent_candidates": [
+                {
+                    "intent_code": "ALARM_CREATE",
+                    "result": "新增闹钟",
+                    "confidence": 0.9,
+                    "reason": repeated_text,
+                }
+            ],
+            "reasoning": repeated_text,
+        }
+    )
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    state = ConversationState(session_id="dedup")
+    outcome = await classifier.classify(
+        session_id="dedup",
+        query="帮我订个6点的闹钟",
+        meta={},
+        conversation_state=state,
+    )
+
+    reasoning = outcome.function_analysis.get("reasoning") or ""
+    assert reasoning.count(repeated_text) == 1

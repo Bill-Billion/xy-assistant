@@ -468,13 +468,26 @@ class CommandService:
                     else:
                         function_analysis.reasoning = "；".join(source_notes)
 
-        response_message = _compose_response_message(function_analysis, reply_message)
+        trimmed_reply = (reply_message or "").strip()
+        use_fallback = False
+        if not trimmed_reply:
+            use_fallback = True
+        elif function_analysis.need_clarify and not function_analysis.clarify_message:
+            use_fallback = True
+
+        if use_fallback:
+            response_message = _compose_response_message(function_analysis, trimmed_reply)
+            reply_source = "fallback"
+        else:
+            response_message = trimmed_reply
+            reply_source = "llm"
 
         logger.debug(
             "classification_output",
             session_id=session_id,
             result=function_analysis.model_dump() if hasattr(function_analysis, "model_dump") else getattr(function_analysis, '__dict__', function_analysis),
             raw_llm_output=raw_output,
+            reply_source=reply_source,
         )
         logger.debug(
             "timing handle_command",
