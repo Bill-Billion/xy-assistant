@@ -249,6 +249,9 @@ class WeatherContext:
 
     @property
     def summary(self) -> str:
+        llm_summary = self.llm_metadata.get("llm_summary")
+        if llm_summary:
+            return llm_summary
         pieces: list[str] = []
         location_display = self.location
         if self.location_source == "default":
@@ -316,6 +319,7 @@ class WeatherContext:
             "location_source": self.location_source,
             "target_date_source": self.target_date_source,
             "llm_metadata": self.llm_metadata,
+            "needs_realtime_data": self.llm_metadata.get("needs_realtime_data", False),
         }
 
     def clone(
@@ -450,121 +454,89 @@ class WeatherService:
     def enabled(self) -> bool:
         return self._enabled
 
-    async def fetch(self, query: str) -> Optional[WeatherContext]:
-        if not self._enabled:
+    async def fetch(
+        self,
+        *,
+        llm_info: Dict[str, Any],
+        summary: Optional[str],
+        needs_realtime: bool,
+        query: str = "",
+    ) -> Optional[WeatherContext]:
+        if not llm_info:
             return None
 
-        overall_start = perf_counter()
-        cleaned_query = self._clean_query_for_location(query)
-        location_hint = self._extract_location(cleaned_query)
-        location_source = "rule" if location_hint else "default"
-        llm_extraction: Optional[LLMExtraction] = None
-        llm_date_extraction: Optional[LLMDateExtraction] = None
+        def _to_float(value: Any) -> Optional[float]:
+            if value is None:
+                return None
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
 
-        if (not location_hint) and self._llm_enabled:
-            loc_llm_start = perf_counter()
-            llm_extraction = await self._extract_location_with_llm(query)
-            logger.debug(
-                "timing weather_service",
-                step="location_llm",
-                duration=round(perf_counter() - loc_llm_start, 3),
-                query=query,
-            )
-            if llm_extraction:
-                candidate_city = self._normalize_city_name(llm_extraction.city) or self._normalize_city_name(
-                    llm_extraction.province
-                )
-                if candidate_city:
-                    if llm_extraction.confidence >= self._llm_confidence_threshold:
-                        location_hint = candidate_city
-                        location_source = "llm"
-                    elif llm_extraction.confidence >= self._llm_low_confidence_threshold:
-                        location_hint = candidate_city
-                        location_source = "llm_low"
+        location_name = str(llm_info.get("location") or "").strip()
+        if not location_name:
+            return None
 
-        geo_point = await self._resolve_point(location_hint)
-        if (
-            not location_hint
-            and geo_point.name == self._default_point.name
-            and location_source not in {"llm", "llm_low"}
-        ):
-            location_source = "default"
-        if location_source == "llm" and llm_extraction:
-            logger.debug(
-                "weather location resolved via llm",
-                city=location_hint,
-                confidence=llm_extraction.confidence,
-            )
-        elif location_source == "llm_low" and llm_extraction:
-            logger.debug(
-                "weather location resolved via llm (low confidence)",
-                city=location_hint,
-                confidence=llm_extraction.confidence,
-            )
-        elif location_source == "default" and not location_hint:
-            logger.debug("weather location fallback to default", query=query)
+        location_confidence = _to_float(llm_info.get("location_confidence"))
+        if location_confidence is None:
+            location_confidence = _to_float((llm_info.get("location_info") or {}).get("confidence"))
 
-        now = now_e8()
-        parsed = parse_weather_date(query, now)
-        if parsed and parsed.value:
-            target_date = parsed.value.date()
-            target_date_source = "query"
+        if location_confidence is not None and location_confidence >= self._llm_confidence_threshold:
+            location_source = "llm"
+        elif location_confidence is not None and location_confidence >= self._llm_low_confidence_threshold:
+            location_source = "llm_low"
         else:
-            target_date = None
-            target_date_source = "default"
+            location_source = "llm_low" if location_confidence is not None else "llm"
 
-        if not target_date and self._llm_enabled:
-            date_llm_start = perf_counter()
-            llm_date_extraction = await self._extract_date_with_llm(query, now)
-            logger.debug(
-                "timing weather_service",
-                step="date_llm",
-                duration=round(perf_counter() - date_llm_start, 3),
-                query=query,
-            )
-            if llm_date_extraction and llm_date_extraction.confidence >= self._llm_confidence_threshold:
-                target_date = llm_date_extraction.resolved_date
+        target_iso = str(llm_info.get("target_date") or "").strip()
+        target_date = None
+        target_date_source = "default"
+        if target_iso:
+            try:
+                target_date = datetime.fromisoformat(target_iso).date()
                 target_date_source = "llm"
+            except ValueError:
+                target_iso = ""
 
-        if (
-            not target_date
-            and llm_extraction
-            and llm_extraction.datetime_text
-        ):
-            alt_parsed = parse_weather_date(llm_extraction.datetime_text, now)
-            if alt_parsed and alt_parsed.value:
-                target_date = alt_parsed.value.date()
-                target_date_source = "llm"
-            else:
-                try:
-                    target_candidate = datetime.fromisoformat(llm_extraction.datetime_text).date()
-                    target_date = target_candidate
-                    target_date_source = "llm"
-                except ValueError:
-                    pass
+        geo_point = await self._resolve_point(location_name)
 
         cache_key = (geo_point.name, target_date.isoformat() if target_date else "NA")
-        llm_metadata: Dict[str, Any] = {}
-        if llm_extraction:
-            llm_metadata["location"] = llm_extraction.to_dict()
-        if llm_date_extraction:
-            llm_metadata["date"] = llm_date_extraction.to_dict()
+        base_metadata: Dict[str, Any] = {
+            "llm_summary": summary or "",
+            "llm_info": llm_info,
+            "needs_realtime_data": needs_realtime,
+        }
+
+        if not needs_realtime or not self._enabled:
+            context = WeatherContext(
+                location=geo_point.name,
+                point=geo_point,
+                target_date=target_date,
+                daily=[],
+                current={},
+                derived_flags={},
+                location_source=location_source,
+                target_date_source=target_date_source,
+                llm_metadata=base_metadata,
+            )
+            self._weather_cache[cache_key] = context
+            logger.debug(
+                "weather summary from llm",
+                location=geo_point.name,
+                query=query,
+            )
+            return context
 
         if cache_key in self._weather_cache:
             cached = self._weather_cache[cache_key]
-            llm_meta = llm_metadata or cached.llm_metadata
-            if (
-                cached.location_source == location_source
-                and cached.target_date_source == target_date_source
-                and cached.llm_metadata == llm_meta
-            ):
-                return cached
+            cached.llm_metadata.update(base_metadata)
             return cached.clone(
                 location_source=location_source,
                 target_date_source=target_date_source,
-                llm_metadata=llm_meta,
+                llm_metadata=cached.llm_metadata,
             )
 
+        overall_start = perf_counter()
         fetch_start = perf_counter()
         try:
             body = await self._client.get_forecast(
@@ -574,21 +546,40 @@ class WeatherService:
             )
         except WeatherAPIError as exc:
             logger.warning("weather fetch failed", error=str(exc))
-            return None
+            return WeatherContext(
+                location=geo_point.name,
+                point=geo_point,
+                target_date=target_date,
+                daily=[],
+                current={},
+                derived_flags={"error": str(exc)},
+                location_source=location_source,
+                target_date_source=target_date_source,
+                llm_metadata={**base_metadata, "api_failed": True},
+            )
         except httpx.HTTPError as exc:
             logger.warning("weather http error", error=str(exc))
-            return None
+            return WeatherContext(
+                location=geo_point.name,
+                point=geo_point,
+                target_date=target_date,
+                daily=[],
+                current={},
+                derived_flags={"error": str(exc)},
+                location_source=location_source,
+                target_date_source=target_date_source,
+                llm_metadata={**base_metadata, "api_failed": True},
+            )
 
         daily_items = _parse_daily(body)
-        if not daily_items:
-            return None
+        current = body.get("now") or {}
         logger.debug(
             "timing weather_service",
             step="weather_api",
             duration=round(perf_counter() - fetch_start, 3),
             location=geo_point.name,
         )
-        current = body.get("now") or {}
+
         derived_flags = _derive_flags(geo_point.name, target_date, daily_items, current)
         context = WeatherContext(
             location=geo_point.name,
@@ -599,7 +590,7 @@ class WeatherService:
             derived_flags=derived_flags,
             location_source=location_source,
             target_date_source=target_date_source,
-            llm_metadata=llm_metadata,
+            llm_metadata=base_metadata,
         )
         self._weather_cache[cache_key] = context
         logger.debug(

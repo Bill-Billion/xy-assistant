@@ -169,7 +169,7 @@ curl -X POST http://localhost:8001/api/command \
 ```json
 {
   "code": 200,
-  "msg": "好的，我来为您查询今天的天气情况哦",
+  "msg": "成都当前多云19℃湿度60%。成都今天 多云 14~22℃。 根据以上数据判断，成都市今天不是晴天。 参考依据：今天多云、小雨；预报降水概率 10%；气温范围 14~22℃。",
   "sessionId": "weather-test-001",
   "function_analysis": {
     "result": "今天天气",
@@ -179,7 +179,70 @@ curl -X POST http://localhost:8001/api/command \
     "confidence": 0.95,
     "need_clarify": false,
     "clarify_message": "",
-    "reasoning": "用户询问今天天气，对应意图为WEATHER_TODAY"
+    "reasoning": "引用实时天气：成都当前多云19℃湿度60%。成都今天 多云 14~22℃。；条件判断结果：晴天不成立；依据：今天多云、小雨；预报降水概率 10%；气温范围 14~22℃",
+    "weather_condition": "sunny",
+    "weather_confidence": 0.9,
+    "weather_summary": "成都当前多云19℃湿度60%。成都今天 多云 14~22℃。",
+    "weather_detail": {
+      "location": "成都市",
+      "target_date": "2025-10-27",
+      "coordinate": {
+        "lat": 30.67,
+        "lng": 104.06
+      },
+      "current": {
+        "weather": "多云",
+        "temperature": "19",
+        "sd": "60%"
+      },
+      "forecast": [
+        {
+          "date": "2025-10-27",
+          "daytime": "多云",
+          "nighttime": "小雨",
+          "high": 22,
+          "low": 14,
+          "precipitation": "10%",
+          "daytime_wind": "西南风 0-3级 <5.4m/s",
+          "night_wind": "东南风 0-3级 <5.4m/s"
+        }
+      ],
+      "derived_flags": {
+        "location": "成都市",
+        "target_date": "2025-10-27",
+        "target_day": {
+          "day_text": "多云",
+          "night_text": "小雨",
+          "high_temp": 22,
+          "low_temp": 14,
+          "precip_probability": 0.1,
+          "has_rain": true,
+          "has_snow": false,
+          "is_sunny": false,
+          "is_cloudy": false,
+          "is_hot": false,
+          "is_cold": false,
+          "wind": "西南风 0-3级 <5.4m/s"
+        },
+        "current": {
+          "weather": "多云",
+          "temperature": 19,
+          "humidity": 0.6,
+          "wind_power": null,
+          "wind_direction": null,
+          "aqi": null
+        }
+      },
+      "location_source": "rule",
+      "target_date_source": "query",
+      "llm_metadata": {}
+    },
+    "weather_evidence": [
+      "今天多云、小雨",
+      "预报降水概率 10%",
+      "气温范围 14~22℃"
+    ],
+    "weather_judgement": "no"
   }
 }
 ```

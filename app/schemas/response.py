@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 from pydantic import BaseModel, Field
 
@@ -16,6 +16,13 @@ class FunctionAnalysis(BaseModel):
     reasoning: Optional[str] = None
     advice: Optional[str] = None
     safety_notice: Optional[str] = None
+    weather_condition: Optional[str] = None
+    weather_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    weather_summary: Optional[str] = None
+    weather_detail: Optional[Dict[str, Any]] = None
+    weather_evidence: Optional[List[str]] = None
+    weather_judgement: Optional[str] = None
+    weather_needs_realtime: Optional[bool] = None
 
 
 class CommandResponse(BaseModel):
@@ -35,7 +42,7 @@ class CommandResponse(BaseModel):
                 "requiresSelection": False,
                 "function_analysis": {
                     "result": "新增闹钟",
-                    "target": "2024-09-20 18-00-00",
+                    "target": "2024-09-20 18:00:00",
                     "event": None,
                     "status": None,
                     "confidence": 0.92,
@@ -44,6 +51,13 @@ class CommandResponse(BaseModel):
                     "reasoning": "用户希望今天下午6点的提醒。",
                     "advice": None,
                     "safety_notice": None,
+                    "weather_condition": None,
+                    "weather_confidence": None,
+                    "weather_summary": None,
+                    "weather_detail": None,
+                    "weather_evidence": None,
+                    "weather_judgement": None,
+                    "weather_needs_realtime": None,
                 },
             }
         },

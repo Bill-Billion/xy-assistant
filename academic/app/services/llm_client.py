@@ -44,6 +44,9 @@ class DoubaoClient:
                 {"role": "system", "content": system_prompt},
                 *messages,
             ],
+            "thinking": {
+                "type": "disabled"
+            }
         }
         if response_format:
             payload["response_format"] = response_format

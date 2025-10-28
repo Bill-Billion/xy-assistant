@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from difflib import SequenceMatcher
-import re
 from time import perf_counter
 from typing import Any, Dict, List, Optional
 
@@ -236,14 +235,7 @@ class IntentClassifier:
             query=query,
             function_analysis=function_analysis,
         )
-        alarm_reply_hint = await self._ensure_alarm_details(
-            query=query,
-            function_analysis=function_analysis,
-        )
-
         reply_message = llm_reply or ""
-        if not reply_message and alarm_reply_hint:
-            reply_message = alarm_reply_hint
 
         if self._should_clarify(function_analysis):
             function_analysis["need_clarify"] = True
@@ -406,21 +398,46 @@ class IntentClassifier:
         definition = INTENT_DEFINITIONS.get(intent_code, INTENT_DEFINITIONS[IntentCode.UNKNOWN])
 
         # 结果优先级：规则细分 > LLM 合法枚举 > 枚举默认值 > 原始 LLM 结果
-        weather_condition = None
+        weather_info: Dict[str, Any] = llm_parsed.get("weather_info") or {}
+        location_info = weather_info.get("location") or {}
+        datetime_info = weather_info.get("datetime") or {}
+        needs_realtime_data = bool(weather_info.get("needs_realtime_data", False))
+
+        weather_summary = weather_info.get("weather_summary") or llm_parsed.get("weather_summary")
+        weather_condition = weather_info.get("weather_condition") or llm_parsed.get("weather_condition")
         if rule_result and getattr(rule_result, "weather_condition", None):
             weather_condition = rule_result.weather_condition
-        else:
-            weather_condition = llm_parsed.get("weather_condition")
 
-        weather_summary = llm_parsed.get("weather_summary")
-        weather_detail = llm_parsed.get("weather_detail")
-        weather_confidence = llm_parsed.get("weather_confidence")
-        if weather_confidence is not None:
+        def _to_float(value: Any) -> Optional[float]:
+            if value is None:
+                return None
             try:
-                weather_confidence = float(weather_confidence)
+                return float(value)
             except (TypeError, ValueError):
-                weather_confidence = None
-        weather_evidence = llm_parsed.get("weather_evidence")
+                return None
+
+        location_confidence = _to_float(location_info.get("confidence"))
+        datetime_confidence = _to_float(datetime_info.get("confidence"))
+        weather_confidence = _to_float(weather_info.get("weather_confidence"))
+        weather_evidence = weather_info.get("weather_evidence") or llm_parsed.get("weather_evidence")
+
+        raw_target_iso = datetime_info.get("iso") or ""
+        target_iso = raw_target_iso.strip() if isinstance(raw_target_iso, str) else ""
+        if target_iso:
+            try:
+                datetime.fromisoformat(target_iso)
+            except ValueError:
+                target_iso = ""
+
+        weather_detail = {
+            "location": location_info.get("name", ""),
+            "location_type": location_info.get("type", ""),
+            "location_confidence": location_confidence,
+            "target_date": target_iso or None,
+            "target_date_text": datetime_info.get("text", ""),
+            "target_date_confidence": datetime_confidence,
+            "needs_realtime_data": needs_realtime_data,
+        }
 
         llm_result = llm_parsed.get("result")
         candidate_result = selected_candidate.get("result") if selected_candidate else None
@@ -616,6 +633,7 @@ class IntentClassifier:
             "weather_detail": weather_detail,
             "weather_confidence": weather_confidence,
             "weather_evidence": weather_evidence,
+            "weather_needs_realtime": needs_realtime_data,
         }
 
         merge_meta = {
@@ -623,6 +641,7 @@ class IntentClassifier:
             "llm_top_intent": llm_top_candidate_code.value if llm_top_candidate_code else None,
             "llm_top_result": llm_top_candidate_result,
             "event_source": event_source,
+            "weather_needs_realtime": needs_realtime_data,
         }
 
         return function_analysis, intent_code, merge_meta
@@ -865,131 +884,6 @@ class IntentClassifier:
         marker = f"target_calibrated={refinement.source}:{refined_target}"
         reasoning = function_analysis.get("reasoning")
         function_analysis["reasoning"] = f"{reasoning}；{marker}" if reasoning else marker
-
-    async def _ensure_alarm_details(
-        self,
-        query: str,
-        function_analysis: Dict[str, Any],
-    ) -> Optional[str]:
-        if (function_analysis.get("result") or "").strip() != "新增闹钟":
-            return None
-        if not self._llm_client:
-            return None
-
-        existing_target = (function_analysis.get("target") or "").strip()
-        previous_event = function_analysis.get("event")
-
-        fallback_target, fallback_event, fallback_event_conf, fallback_reply = await self._parse_alarm_with_llm(query)
-        if not fallback_target and not fallback_event:
-            return fallback_reply
-
-        if fallback_target and not existing_target:
-            function_analysis["target"] = fallback_target
-
-        if fallback_event:
-            function_analysis["event"] = fallback_event
-            marker = (
-                "event_source=llm"
-                if fallback_event_conf >= EVENT_CONFIDENCE_THRESHOLD
-                else "event_source=llm_low_conf"
-            )
-        else:
-            marker = None
-
-        existing_confidence = function_analysis.get("confidence")
-        try:
-            numeric_conf = float(existing_confidence) if existing_confidence is not None else 0.0
-        except (TypeError, ValueError):
-            numeric_conf = 0.0
-        function_analysis["confidence"] = max(numeric_conf, 0.75)
-
-        reasoning_markers = ["alarm_details=llm"]
-        if marker:
-            reasoning_markers.append(marker)
-        if previous_event and previous_event != function_analysis.get("event"):
-            reasoning_markers.append("event_override=llm")
-        reasoning = function_analysis.get("reasoning")
-        addition = "；".join(reasoning_markers)
-        function_analysis["reasoning"] = f"{reasoning}；{addition}" if reasoning else addition
-        return fallback_reply
-
-    async def _parse_alarm_with_llm(
-        self,
-        query: str,
-    ) -> tuple[Optional[str], Optional[str], float, Optional[str]]:
-        base_time = now_e8()
-        payload = {
-            "current_time": base_time.strftime("%Y-%m-%d %H:%M:%S%z"),
-            "query": query,
-            "instruction": (
-                "请解析提醒/闹钟语句，输出 JSON："
-                '{"target_iso":"2024-09-21 09:00:00","event":"买火车票","event_confidence":0.9,'
-                '"status":"每周三","status_confidence":0.5,"confidence":0.92,'
-                '"reply":"好的，我会在后天早上9点提醒您买火车票。"}。'
-                "若无法确定，返回 {\"confidence\":0}。"
-            ),
-        }
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "你是时间解析助手，根据当前时间和用户指令，输出提醒的结构化信息。"
-                    "必须仅返回 JSON，包含 target_iso、event、event_confidence、status、status_confidence、confidence、reply 字段。"
-                    "若无法解析，请返回 {\"confidence\":0}。"
-                ),
-            },
-            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-        ]
-
-        try:
-            _, parsed = await self._llm_client.chat(
-                system_prompt="",
-                messages=messages,
-                response_format={"type": "json_object"},
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("alarm llm parse failed", error=str(exc))
-            return None, None, 0.0, None
-
-        if not isinstance(parsed, dict):
-            return None, None, 0.0, None
-
-        try:
-            confidence = float(parsed.get("confidence", 0) or 0)
-        except (TypeError, ValueError):
-            confidence = 0.0
-        if confidence < 0.6:
-            return None, None, 0.0, None
-
-        target_iso = (parsed.get("target_iso") or parsed.get("target") or "").strip()
-        if not target_iso:
-            try:
-                days = float(parsed.get("days", 0) or 0)
-                hours = float(parsed.get("hours", 0) or 0)
-                minutes = float(parsed.get("minutes", 0) or 0)
-                seconds = float(parsed.get("seconds", 0) or 0)
-            except (TypeError, ValueError):
-                days = hours = minutes = seconds = 0.0
-            delta = timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
-            if timedelta(0) < delta < timedelta(days=365 * 5):
-                reminder_time = (base_time + delta).astimezone(EAST_EIGHT)
-                target_iso = reminder_time.strftime("%Y-%m-%d %H:%M:%S")
-
-        if target_iso and re.match(r"^\d{4}-\d{2}-\d{2} \d{2}[:\-]\d{2}[:\-]\d{2}$", target_iso):
-            target_iso = target_iso.replace("-", ":", 2) if target_iso.count("-") > 2 else target_iso
-
-        event_raw = (parsed.get("event") or "").strip()
-        try:
-            event_confidence = float(parsed.get("event_confidence", 0) or 0)
-        except (TypeError, ValueError):
-            event_confidence = 0.0
-        sanitized_event = self._sanitize_event_text(event_raw)
-        if not self._validate_event_text(sanitized_event):
-            sanitized_event = None
-
-        reply_hint = (parsed.get("reply") or "").strip() or None
-
-        return target_iso or None, sanitized_event, event_confidence, reply_hint
 
     def _resolve_intent_code(
         self,

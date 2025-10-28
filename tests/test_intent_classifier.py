@@ -35,22 +35,26 @@ def fixed_now(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_classifier_uses_rule_for_alarm():
-    fake_llm = FakeDoubaoClient([
+    fake_llm = FakeDoubaoClient(
         {
-            "reply": "好的，为您设置闹钟。",
-            "intent_code": "UNKNOWN",
-            "confidence": 0.3,
-        },
-        {
-            "confidence": 0.95,
-            "target_iso": "2024-09-20 18:00:00",
-            "event": "",
-            "event_confidence": 0.0,
-            "status": "",
-            "status_confidence": 0.0,
-            "reply": "好的，我会在今天18:00提醒您。",
-        },
-    ])
+            "reply": "好的，我已为您设置今天18:00的闹钟。",
+            "intent_candidates": [
+                {
+                    "intent_code": "ALARM_CREATE",
+                    "result": "新增闹钟",
+                    "target": "2024-09-20 18:00:00",
+                    "parsed_time": "2024-09-20 18:00:00",
+                    "event": "晚间提醒",
+                    "event_confidence": 0.9,
+                    "status": "",
+                    "status_confidence": 0.0,
+                    "confidence": 0.95,
+                    "reason": "解析出 18:00 并提炼事件",
+                }
+            ],
+            "weather_info": {"location": {"name": "", "type": "", "confidence": 0}, "datetime": {"text": "", "iso": "", "confidence": 0}, "needs_realtime_data": False, "weather_summary": "", "weather_condition": "", "weather_confidence": 0},
+        }
+    )
     classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
     state = ConversationState(session_id="abc")
     result = await classifier.classify(

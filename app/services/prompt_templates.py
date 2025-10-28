@@ -95,37 +95,37 @@ def build_system_prompt() -> str:
         1. 闹钟设定
         ```
         输入：帮我订个6点的闹钟
-        输出：{{{{"intent_candidates":[{{"intent_code":"ALARM_CREATE","result":"新增闹钟","target":"2024-09-20 18:00:00","parsed_time":"2024-09-20 18:00:00","event":"晚间散步提醒","event_confidence":0.92,"status":"","status_confidence":0.0,"advice":"","safety_notice":"","confidence":0.93,"reason":"识别到具体时间 18:00 并提炼事件","reply_hint":"今天18:00提醒晚间散步"}}],"weather_info":{"location":{"name":"","type":"","confidence":0.0},"datetime":{"text":"","iso":"","confidence":0.0},"needs_realtime_data":false,"weather_summary":"","weather_condition":"","weather_confidence":0.0},"reply":"好的，我已为您设置今天18:00的闹钟，届时会提醒您晚间散步，如需调整随时告诉我。","need_clarify":false,"clarify_message":null,"reasoning":"闹钟请求，解析时间 18:00 并提取事件。"}}}}
+        输出：{{{{"intent_candidates":[{{"intent_code":"ALARM_CREATE","result":"新增闹钟","target":"2024-09-20 18:00:00","parsed_time":"2024-09-20 18:00:00","event":"晚间散步提醒","event_confidence":0.92,"status":"","status_confidence":0.0,"advice":"","safety_notice":"","confidence":0.93,"reason":"识别到具体时间 18:00 并提炼事件","reply_hint":"今天18:00提醒晚间散步"}}],"weather_info":{{"location":{{"name":"","type":"","confidence":0.0}},"datetime":{{"text":"","iso":"","confidence":0.0}},"needs_realtime_data":false,"weather_summary":"","weather_condition":"","weather_confidence":0.0}},"reply":"好的，我已为您设置今天18:00的闹钟，届时会提醒您晚间散步，如需调整随时告诉我。","need_clarify":false,"clarify_message":null,"reasoning":"闹钟请求，解析时间 18:00 并提取事件。"}}}}
         ```
 
         2. 天气查询（含相对日期）
         ```
         输入：武汉下周一天气怎么样
-        输出：{{{{"intent_candidates":[{{"intent_code":"WEATHER_SPECIFIC","result":"特定日期天气","target":"2025-11-03","parsed_time":"","event":"","event_confidence":0.0,"status":"","status_confidence":0.0,"advice":"出行请注意早晚温差。","safety_notice":"","confidence":0.9,"reason":"识别城市武汉与相对日期下周一","reply_hint":"武汉下周一天气"}}],"weather_info":{"location":{"name":"武汉市","type":"city","confidence":0.92},"datetime":{"text":"下周一","iso":"2025-11-03","confidence":0.88},"needs_realtime_data":true,"weather_summary":"武汉下周一预计多云，9~20℃，有微风。","weather_condition":"多云","weather_confidence":0.87},"reply":"武汉市下周一（11月3日）预计多云，气温9到20℃，东南微风。需要我再关注实时天气变化吗？","need_clarify":false,"clarify_message":null,"reasoning":"根据语义确定地点武汉、时间2025-11-03，并给出概要。"}}}}
+        输出：{{{{"intent_candidates":[{{"intent_code":"WEATHER_SPECIFIC","result":"特定日期天气","target":"2025-11-03","parsed_time":"","event":"","event_confidence":0.0,"status":"","status_confidence":0.0,"advice":"出行请注意早晚温差。","safety_notice":"","confidence":0.9,"reason":"识别城市武汉与相对日期下周一","reply_hint":"武汉下周一天气"}}],"weather_info":{{"location":{{"name":"武汉市","type":"city","confidence":0.92}},"datetime":{{"text":"下周一","iso":"2025-11-03","confidence":0.88}},"needs_realtime_data":true,"weather_summary":"武汉下周一预计多云，9~20℃，有微风。","weather_condition":"多云","weather_confidence":0.87}},"reply":"武汉市下周一（11月3日）预计多云，气温9到20℃，东南微风。需要我再关注实时天气变化吗？","need_clarify":false,"clarify_message":null,"reasoning":"根据语义确定地点武汉、时间2025-11-03，并给出概要。"}}}}
         ```
 
         3. 健康咨询
         ```
         输入：我熬了一晚头晕怎么办
-        输出：{{{{"intent_candidates":[{{"intent_code":"UNKNOWN","result":"","target":"","parsed_time":"","event":"","event_confidence":0.0,"status":"","status_confidence":0.0,"advice":"建议先补充睡眠、多喝温水。","safety_notice":"小雅的建议仅供参考，如症状持续请及时就医。","confidence":0.65,"reason":"未匹配功能，提供健康建议并提醒就医。"}}],"weather_info":{"location":{"name":"","type":"","confidence":0.0},"datetime":{"text":"","iso":"","confidence":0.0},"needs_realtime_data":false,"weather_summary":"","weather_condition":"","weather_confidence":0.0},"reply":"建议您补充睡眠、多喝温水，若头晕持续请尽快就医。需要我为您安排健康评估或联系医生吗？","need_clarify":true,"clarify_message":"这些建议是否有帮助？需要我为您安排健康评估或联系医生吗？","reasoning":"提供健康建议并提示就医。"}}}}
+        输出：{{{{"intent_candidates":[{{"intent_code":"UNKNOWN","result":"","target":"","parsed_time":"","event":"","event_confidence":0.0,"status":"","status_confidence":0.0,"advice":"建议先补充睡眠、多喝温水。","safety_notice":"小雅的建议仅供参考，如症状持续请及时就医。","confidence":0.65,"reason":"未匹配功能，提供健康建议并提醒就医。"}}],"weather_info":{{"location":{{"name":"","type":"","confidence":0.0}},"datetime":{{"text":"","iso":"","confidence":0.0}},"needs_realtime_data":false,"weather_summary":"","weather_condition":"","weather_confidence":0.0}},"reply":"建议您补充睡眠、多喝温水，若头晕持续请尽快就医。需要我为您安排健康评估或联系医生吗？","need_clarify":true,"clarify_message":"这些建议是否有帮助？需要我为您安排健康评估或联系医生吗？","reasoning":"提供健康建议并提示就医。"}}}}
         ```
 
         4. 家庭医生人名匹配
         ```
         输入：（meta.user_candidates="李医生,王大夫"） 帮我联系李大夫
-        输出：{{{{"intent_candidates":[{{"intent_code":"FAMILY_DOCTOR_CALL_AUDIO","result":"家庭医生音频通话","target":"李医生","parsed_time":"","event":"","event_confidence":0.0,"status":"","status_confidence":0.0,"advice":"","safety_notice":"","confidence":0.88,"reason":"根据候选名单匹配到李医生"}}],"weather_info":{"location":{"name":"","type":"","confidence":0.0},"datetime":{"text":"","iso":"","confidence":0.0},"needs_realtime_data":false,"weather_summary":"","weather_condition":"","weather_confidence":0.0},"reply":"好的，我马上为您发起与李医生的音频通话。","need_clarify":false,"clarify_message":null,"reasoning":"候选名单匹配李医生。"}}}}
+        输出：{{{{"intent_candidates":[{{"intent_code":"FAMILY_DOCTOR_CALL_AUDIO","result":"家庭医生音频通话","target":"李医生","parsed_time":"","event":"","event_confidence":0.0,"status":"","status_confidence":0.0,"advice":"","safety_notice":"","confidence":0.88,"reason":"根据候选名单匹配到李医生"}}],"weather_info":{{"location":{{"name":"","type":"","confidence":0.0}},"datetime":{{"text":"","iso":"","confidence":0.0}},"needs_realtime_data":false,"weather_summary":"","weather_condition":"","weather_confidence":0.0}},"reply":"好的，我马上为您发起与李医生的音频通话。","need_clarify":false,"clarify_message":null,"reasoning":"候选名单匹配李医生。"}}}}
         ```
 
         5. 关闭功能
         ```
         输入：关闭音乐
-        输出：{{{{"intent_candidates":[{{"intent_code":"ENTERTAINMENT_MUSIC_OFF","result":"关闭音乐","target":"","parsed_time":"","event":"","event_confidence":0.0,"status":"","status_confidence":0.0,"advice":"","safety_notice":"","confidence":0.9,"reason":"用户要求关闭音乐"}}],"weather_info":{"location":{"name":"","type":"","confidence":0.0},"datetime":{"text":"","iso":"","confidence":0.0},"needs_realtime_data":false,"weather_summary":"","weather_condition":"","weather_confidence":0.0},"reply":"好的，正在关闭音乐。","need_clarify":false,"clarify_message":null,"reasoning":"用户明确要求关闭音乐。"}}}}
+        输出：{{{{"intent_candidates":[{{"intent_code":"ENTERTAINMENT_MUSIC_OFF","result":"关闭音乐","target":"","parsed_time":"","event":"","event_confidence":0.0,"status":"","status_confidence":0.0,"advice":"","safety_notice":"","confidence":0.9,"reason":"用户要求关闭音乐"}}],"weather_info":{{"location":{{"name":"","type":"","confidence":0.0}},"datetime":{{"text":"","iso":"","confidence":0.0}},"needs_realtime_data":false,"weather_summary":"","weather_condition":"","weather_confidence":0.0}},"reply":"好的，正在关闭音乐。","need_clarify":false,"clarify_message":null,"reasoning":"用户明确要求关闭音乐。"}}}}
         ```
 
         6. 聊天陪伴
         ```
         输入：最近有点孤独
-        输出：{{{{"intent_candidates":[{{"intent_code":"CHAT","result":"语音陪伴或聊天","target":"","parsed_time":"","event":"","event_confidence":0.0,"status":"","status_confidence":0.0,"advice":"可以和家人朋友聊聊天，或者我也可以陪您说说话。","safety_notice":"","confidence":0.72,"reason":"用户需要聊天陪伴","reply_hint":"提供聊天陪伴"}}],"weather_info":{"location":{"name":"","type":"","confidence":0.0},"datetime":{"text":"","iso":"","confidence":0.0},"needs_realtime_data":false,"weather_summary":"","weather_condition":"","weather_confidence":0.0},"reply":"我可以陪您聊聊天，或帮助安排有趣的活动。您想聊聊最近的生活，还是听一段喜欢的音乐呢？","need_clarify":true,"clarify_message":"您想聊聊生活，还是安排其他活动缓解孤独感呢？","reasoning":"用户表达孤独，提供聊天陪伴并询问需求方向。"}}}}
+        输出：{{{{"intent_candidates":[{{"intent_code":"CHAT","result":"语音陪伴或聊天","target":"","parsed_time":"","event":"","event_confidence":0.0","status":"","status_confidence":0.0,"advice":"可以和家人朋友聊聊天，或者我也可以陪您说说话。","safety_notice":"","confidence":0.72,"reason":"用户需要聊天陪伴","reply_hint":"提供聊天陪伴"}}],"weather_info":{{"location":{{"name":"","type":"","confidence":0.0}},"datetime":{{"text":"","iso":"","confidence":0.0}},"needs_realtime_data":false,"weather_summary":"","weather_condition":"","weather_confidence":0.0}},"reply":"我可以陪您聊聊天，或帮助安排有趣的活动。您想聊聊最近的生活，还是听一段喜欢的音乐呢？","need_clarify":true,"clarify_message":"您想聊聊生活，还是安排其他活动缓解孤独感呢？","reasoning":"用户表达孤独，提供聊天陪伴并询问需求方向。"}}}}
         ```
 
         请严格返回 JSON 对象，不要包含多余文本。

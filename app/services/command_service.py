@@ -307,30 +307,6 @@ class CommandService:
         )
 
         overall_start = perf_counter()
-        weather_context = None
-        # 天气相关问题提前调用天气服务，供模型作为结构化上下文使用。
-        if (
-            self._weather_service
-            and self._weather_service.enabled
-            and payload.query
-            and "天气" in payload.query
-        ):
-            weather_fetch_start = perf_counter()
-            try:
-                weather_context = await self._weather_service.fetch(payload.query)
-                if weather_context:
-                    meta_payload["weather"] = weather_context.to_prompt_dict()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("weather context fetch failed", error=str(exc))
-                weather_context = None
-            else:
-                logger.debug(
-                    "timing handle_command",
-                    step="weather_fetch",
-                    duration=round(perf_counter() - weather_fetch_start, 3),
-                    session_id=session_id,
-                )
-
         try:
             classify_start = perf_counter()
             # 核心步骤：调用意图分类器，结合大模型与规则得到结构化分析。
@@ -350,11 +326,43 @@ class CommandService:
             function_analysis = FunctionAnalysis.model_validate(classification.function_analysis)
             reply_message = classification.reply_message
             raw_output = classification.raw_llm_output
-            if weather_context and function_analysis.result and "天气" in (function_analysis.result or ""):
+            weather_context = None
+            weather_detail_payload = function_analysis.weather_detail or {}
+            weather_needs_realtime = getattr(function_analysis, "weather_needs_realtime", None)
+
+            if (
+                self._weather_service
+                and self._weather_service.enabled
+                and weather_detail_payload
+            ):
+                weather_fetch_start = perf_counter()
+                try:
+                    weather_context = await self._weather_service.fetch(
+                        llm_info=weather_detail_payload,
+                        summary=function_analysis.weather_summary,
+                        needs_realtime=bool(weather_needs_realtime),
+                        query=payload.query,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("weather context fetch failed", error=str(exc))
+                    weather_context = None
+                else:
+                    logger.debug(
+                        "timing handle_command",
+                        step="weather_fetch",
+                        duration=round(perf_counter() - weather_fetch_start, 3),
+                        session_id=session_id,
+                    )
+
+            if weather_context:
                 base_summary = weather_context.summary
                 function_analysis.weather_summary = function_analysis.weather_summary or base_summary
-                function_analysis.weather_detail = weather_context.to_function_detail()
+                context_detail = weather_context.to_function_detail()
+                merged_detail = {**weather_detail_payload, **context_detail}
+                merged_detail.setdefault("needs_realtime_data", bool(weather_detail_payload.get("needs_realtime_data")))
+                function_analysis.weather_detail = merged_detail
                 meta_payload["weather"] = weather_context.to_prompt_dict()
+
                 broadcast_start = perf_counter()
                 broadcast_result = await self._generate_weather_broadcast(
                     weather_context=weather_context,
@@ -376,10 +384,7 @@ class CommandService:
                         existing_conf,
                         max(0.0, min(broadcast_result.confidence, 1.0)),
                     )
-                else:
-                    function_analysis.weather_summary = function_analysis.weather_summary or base_summary
-                function_analysis.weather_detail = weather_context.to_function_detail()
-                meta_payload["weather"] = weather_context.to_prompt_dict()
+
                 judgement, evidence = _evaluate_weather_condition(
                     getattr(function_analysis, "weather_condition", None),
                     weather_context,
@@ -394,15 +399,6 @@ class CommandService:
                         current_conf = 0.0
                     if current_conf < 0.9:
                         function_analysis.weather_confidence = 0.9
-                if not function_analysis.reasoning:
-                    reasoning_notes = [f"引用实时天气：{weather_context.summary}"]
-                    if judgement:
-                        verdict = "成立" if judgement == "yes" else "不成立"
-                        condition_text = _WEATHER_CONDITION_TEXT.get(function_analysis.weather_condition or "", "天气情况")
-                        reasoning_notes.append(f"条件判断结果：{condition_text}{verdict}")
-                    if evidence:
-                        reasoning_notes.append("依据：" + "；".join(evidence))
-                    function_analysis.reasoning = "；".join(reasoning_notes)
                 detail_meta = function_analysis.weather_detail or {}
                 source_notes: list[str] = []
                 loc_source = detail_meta.get("location_source")

@@ -17,6 +17,7 @@
 | `app/services/intent_rules.py` | 功能规则链，覆盖天气/时间/健康/家政等多场景；含健康监测细分、医生联系、人名解析等 |
 | `app/services/conversation.py` | 基于 `TTLCache` 的会话状态管理，保存最近若干轮消息及澄清状态 |
 | `app/services/llm_client.py` | 豆包 ChatCompletions API 异步封装，含重试与 JSON 解析 |
+| `app/services/weather_client.py` & `weather_service.py` | 阿里云天气 API 封装 + 地理解析/缓存，将实时天气摘要注入 LLM 上下文与响应 |
 | `app/services/prompt_templates.py` | 系统 Prompt 构造，列举所有意图枚举及 few-shot 示例 |
 | `app/utils/time_utils.py` | 时间解析工具：东八区时间、相对时间/周期解析、闹钟 target 生成、人名净化等 |
 | `app/utils/calendar_utils.py` | 使用 `lunar-python` 获取农历、节气、宜忌等信息 |
@@ -24,7 +25,7 @@
 
 ## 3. 需求映射
 - **功能识别**：21+ 类别，`IntentDefinition` 中维护 `IntentCode` 与固定 `result` 字段；新增的健康监测细分意图（血压/血氧/心率等）满足原始需求细粒度跳转。
-- **天气日期**：处理今天/明天/后天以及 15 天内指定日期；超窗返回固定提示。
+- **天气日期**：处理今天/明天/后天及 15 天内指定日期；实时调用天气 API，`function_analysis` 补充 `weather_summary/weather_detail`，并输出 `weather_condition/weather_judgement/weather_evidence`。无法从规则提取地名/日期时，会调用 LLM 兜底解析，若仍失败则回退默认城市并在 reasoning 中说明。
 - **时间与闹钟**：解析模糊 6 点、相对时间/周期、事件、频次；`target` 返回东八区时间的 `yyyy-mm-dd hh-mm-ss` 字符串。
 - **健康场景**：
   - “健康监测/健康检测”→ `健康监测`；
@@ -44,6 +45,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
   - `DOUBAO_MODEL`
   - `DOUBAO_API_URL`
   - `CONFIDENCE_THRESHOLD`
+  - `WEATHER_API_APP_CODE` （及 `WEATHER_*` 系列用于控制天气接入）
 
 ### Docker 打包（x86_64）
 Dockerfile 采用两阶段构建（builder 中执行 `pytest`），简要流程：
