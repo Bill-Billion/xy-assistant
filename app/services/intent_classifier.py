@@ -877,26 +877,24 @@ class IntentClassifier:
             return None
 
         existing_target = (function_analysis.get("target") or "").strip()
-        existing_event = (function_analysis.get("event") or "").strip()
-
-        need_llm = False
-        if not existing_target:
-            need_llm = True
-        if not self._validate_event_text(existing_event):
-            need_llm = True
-
-        if not need_llm:
-            return None
+        previous_event = function_analysis.get("event")
 
         fallback_target, fallback_event, fallback_event_conf, fallback_reply = await self._parse_alarm_with_llm(query)
         if not fallback_target and not fallback_event:
-            return None
+            return fallback_reply
 
         if fallback_target and not existing_target:
             function_analysis["target"] = fallback_target
 
         if fallback_event:
             function_analysis["event"] = fallback_event
+            marker = (
+                "event_source=llm"
+                if fallback_event_conf >= EVENT_CONFIDENCE_THRESHOLD
+                else "event_source=llm_low_conf"
+            )
+        else:
+            marker = None
 
         existing_confidence = function_analysis.get("confidence")
         try:
@@ -905,9 +903,14 @@ class IntentClassifier:
             numeric_conf = 0.0
         function_analysis["confidence"] = max(numeric_conf, 0.75)
 
-        marker = "alarm_details=llm"
+        reasoning_markers = ["alarm_details=llm"]
+        if marker:
+            reasoning_markers.append(marker)
+        if previous_event and previous_event != function_analysis.get("event"):
+            reasoning_markers.append("event_override=llm")
         reasoning = function_analysis.get("reasoning")
-        function_analysis["reasoning"] = f"{reasoning}；{marker}" if reasoning else marker
+        addition = "；".join(reasoning_markers)
+        function_analysis["reasoning"] = f"{reasoning}；{addition}" if reasoning else addition
         return fallback_reply
 
     async def _parse_alarm_with_llm(
