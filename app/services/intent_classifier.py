@@ -306,6 +306,11 @@ class IntentClassifier:
         # 1. 规范化大模型候选列表，方便与规则结果做精度比较。
         llm_parsed = llm_parsed or {}
         raw_result = llm_parsed.get("result")
+        llm_event_confidence = 0.0
+        try:
+            llm_event_confidence = float(llm_parsed.get("event_confidence", 0) or 0)
+        except (TypeError, ValueError):
+            llm_event_confidence = 0.0
 
         candidate_entries: list[dict[str, Any]] = []
         for item in llm_parsed.get("intent_candidates", []) or []:
@@ -464,15 +469,23 @@ class IntentClassifier:
         event = None
         if candidate_event:
             sanitized = self._sanitize_event_text(candidate_event)
-            if candidate_event_conf >= EVENT_CONFIDENCE_THRESHOLD and self._validate_event_text(sanitized):
+            if self._validate_event_text(sanitized):
                 event = sanitized
-                event_source = "llm"
+                event_source = (
+                    "llm"
+                    if candidate_event_conf >= EVENT_CONFIDENCE_THRESHOLD
+                    else "llm_low_conf"
+                )
 
         if event is None and llm_parsed.get("event"):
             sanitized = self._sanitize_event_text(llm_parsed.get("event") or "")
             if self._validate_event_text(sanitized):
                 event = sanitized
-                event_source = "llm"
+                event_source = (
+                    "llm"
+                    if llm_event_confidence >= EVENT_CONFIDENCE_THRESHOLD
+                    else "llm_low_conf"
+                )
 
         if event is None and rule_result and rule_result.event:
             sanitized = self._sanitize_event_text(rule_result.event)
@@ -882,7 +895,7 @@ class IntentClassifier:
         if fallback_target and not existing_target:
             function_analysis["target"] = fallback_target
 
-        if fallback_event and fallback_event_conf >= EVENT_CONFIDENCE_THRESHOLD:
+        if fallback_event:
             function_analysis["event"] = fallback_event
 
         existing_confidence = function_analysis.get("confidence")
@@ -968,7 +981,7 @@ class IntentClassifier:
         except (TypeError, ValueError):
             event_confidence = 0.0
         sanitized_event = self._sanitize_event_text(event_raw)
-        if not self._validate_event_text(sanitized_event) or event_confidence < EVENT_CONFIDENCE_THRESHOLD:
+        if not self._validate_event_text(sanitized_event):
             sanitized_event = None
 
         reply_hint = (parsed.get("reply") or "").strip() or None
