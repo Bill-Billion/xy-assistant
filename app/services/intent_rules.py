@@ -16,6 +16,7 @@ from app.utils.time_utils import (
     is_within_days,
     now_e8,
     parse_weather_date,
+    resolve_calendar_target,
     extract_medicine,
 )
 
@@ -39,6 +40,10 @@ class RuleResult:
     clarify_message: Optional[str] = None
     reasoning: Optional[str] = None
     weather_condition: Optional[str] = None
+    parsed_time: Optional[str] = None
+    time_text: Optional[str] = None
+    time_confidence: Optional[float] = None
+    time_source: Optional[str] = None
 
 
 # 健康监测关键词映射：不同检测需求需返回对应细分意图与固定 result。
@@ -307,10 +312,22 @@ def apply_calendar_rule(context: RuleContext) -> Optional[RuleResult]:
     """处理日历、黄历、吉日等需求。"""
     terms = ["几月几日", "农历", "黄历", "黄道吉日", "节气", "日期", "几号", "万年历", "适合搬家", "宜搬家", "搬家吉日"]
     if any(term in context.query for term in terms) or ("适合" in context.query and "搬家" in context.query):
-        lunar = get_lunar_info(context.base_time)
+        target_date, time_text = resolve_calendar_target(context.query, context.base_time)
+        lunar = get_lunar_info(target_date)
         summary = format_lunar_summary(lunar) if lunar else None
-        reasoning = f"提供日期及万年历信息，包含：{summary}" if summary else "提供日期及万年历信息"
-        return RuleResult(IntentCode.CALENDAR_GENERAL, "日期时间和万年历", reasoning=reasoning)
+        reasoning_detail = f"提供{time_text or '当日'}的日期及万年历信息"
+        if summary:
+            reasoning_detail += f"，包含：{summary}"
+        parsed_time = target_date.isoformat()
+        return RuleResult(
+            IntentCode.CALENDAR_GENERAL,
+            "日期时间和万年历",
+            reasoning=reasoning_detail,
+            parsed_time=parsed_time,
+            time_text=time_text or "今天",
+            time_confidence=0.98,
+            time_source="rule",
+        )
     return None
 
 
@@ -645,10 +662,65 @@ def run_rules(query: str, meta: dict[str, Any] | None = None) -> Optional[RuleRe
 
 
 def extract_subject(text: str) -> Optional[str]:
-    match = re.search(r"学([\u4e00-\u9fa5A-Za-z0-9]+)", text)
-    if match:
-        return match.group(1)
-    match = re.search(r"听([\u4e00-\u9fa5A-Za-z0-9]{2,})", text)
-    if match:
-        return match.group(1)
+    """提取学习/听类指令的目标内容，去除语气词与后缀。"""
+    if not text:
+        return None
+    normalized = text.strip()
+    learn_patterns = [
+        r"(?:想要|希望|帮我|请)?(?:学习|学学|学)(?P<subject>[\u4e00-\u9fa5A-Za-z0-9\s]{1,20})",
+        r"(?:想|要|希望|需要)?(?P<subject>[\u4e00-\u9fa5A-Za-z0-9\s]{2,20})(?:课程|教学|学习资料)",
+    ]
+    listen_patterns = [
+        r"听(?P<subject>[\u4e00-\u9fa5A-Za-z0-9\s]{2,20})",
+    ]
+    trailing_tokens = [
+        "一下下",
+        "一下",
+        "课程",
+        "教学",
+        "教程",
+        "视频",
+        "资料",
+        "怎么做",
+        "怎么写",
+        "怎么说",
+        "怎么练",
+        "怎么学",
+        "怎么",
+        "如何",
+        "吗",
+        "呢",
+        "呀",
+        "啊",
+        "吧",
+        "么",
+    ]
+
+    def _clean_subject(raw: str) -> Optional[str]:
+        candidate = raw.strip()
+        candidate = candidate.replace(" ", "")
+        for token in trailing_tokens:
+            if candidate.endswith(token):
+                candidate = candidate[: -len(token)]
+        candidate = candidate.strip("的")
+        candidate = re.split(r"[，。！？,.!?；;]", candidate)[0]
+        generic_terms = {"东西", "事情", "事儿", "啥", "什么", "东西吗", "东西呀"}
+        if len(candidate) >= 2 and candidate not in generic_terms:
+            return candidate
+        return None
+
+    for pattern in learn_patterns:
+        match = re.search(pattern, normalized)
+        if match:
+            subject = match.group("subject") or ""
+            subject = _clean_subject(subject)
+            if subject:
+                return subject
+    for pattern in listen_patterns:
+        match = re.search(pattern, normalized)
+        if match:
+            subject = match.group("subject") or ""
+            subject = _clean_subject(subject)
+            if subject:
+                return subject
     return None

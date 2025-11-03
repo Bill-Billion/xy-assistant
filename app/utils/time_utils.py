@@ -4,7 +4,7 @@ import re
 import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Tuple
 
 try:
     import cn2an
@@ -15,6 +15,24 @@ import dateparser
 from zoneinfo import ZoneInfo
 
 EAST_EIGHT = ZoneInfo("Asia/Shanghai")
+
+_DATE_LABEL_PATTERNS = [
+    r"今天",
+    r"明天",
+    r"后天",
+    r"大后天",
+    r"下+周[一二三四五六日天1234567]",
+    r"这周[一二三四五六日天1234567]",
+    r"本周[一二三四五六日天1234567]",
+    r"下+星期[一二三四五六日天1234567]",
+    r"这星期[一二三四五六日天1234567]",
+    r"本星期[一二三四五六日天1234567]",
+    r"下+礼拜[一二三四五六日天1234567]",
+    r"这礼拜[一二三四五六日天1234567]",
+    r"本礼拜[一二三四五六日天1234567]",
+    r"\d{1,2}月\d{1,2}日?",
+    r"\d{1,2}号",
+]
 
 
 # 人名净化列表：用于去除命令中的功能词，保留真实人名或称谓。
@@ -51,6 +69,20 @@ PERSON_NAME_STRIP_TOKENS = [
     "的",
 ]
 
+PERSON_NAME_LEADING_TOKENS = [
+    "看一下",
+    "看看",
+    "查看",
+    "看",
+    "打开",
+    "我要",
+    "我想",
+    "帮我",
+    "想给",
+    "想为",
+    "想帮",
+]
+
 
 def sanitize_person_name(name: str) -> Optional[str]:
     """将识别到的人名剔除功能词后返回，若为空则返回 None。"""
@@ -58,6 +90,11 @@ def sanitize_person_name(name: str) -> Optional[str]:
     for token in PERSON_NAME_STRIP_TOKENS:
         cleaned = cleaned.replace(token, "")
     cleaned = cleaned.strip()
+    for token in PERSON_NAME_LEADING_TOKENS:
+        if cleaned.startswith(token):
+            cleaned = cleaned[len(token):]
+    if cleaned.endswith("的"):
+        cleaned = cleaned[:-1]
     # 限制长度，避免过长字段
     cleaned = cleaned[:8]
     return cleaned or None
@@ -97,6 +134,57 @@ def parse_weather_date(text: str, base_time: Optional[datetime] = None) -> Optio
     return None
 
 
+def _extract_date_phrase(text: str) -> Optional[str]:
+    for pattern in _DATE_LABEL_PATTERNS:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(0)
+    return None
+
+
+def resolve_calendar_target(
+    text: str,
+    base_time: Optional[datetime] = None,
+) -> Tuple[datetime, str]:
+    """为日历/农历查询确定目标日期及描述文本。"""
+    base_time = (base_time or now_e8()).astimezone(EAST_EIGHT)
+    weather_date = parse_weather_date(text, base_time)
+    if weather_date and weather_date.value:
+        target = weather_date.value.astimezone(EAST_EIGHT)
+        label_map = {
+            "today": "今天",
+            "tomorrow": "明天",
+            "day_after": "后天",
+        }
+        label = label_map.get(weather_date.kind)
+        if weather_date.kind == "specific":
+            label = target.strftime("%m月%d日")
+        if not label:
+            label = _extract_date_phrase(text) or target.strftime("%Y年%m月%d日")
+        return target, label
+
+    parsed = dateparser.parse(
+        text,
+        languages=["zh"],
+        settings={
+            "RELATIVE_BASE": base_time,
+            "PREFER_DATES_FROM": "future",
+            "TIMEZONE": "Asia/Shanghai",
+            "RETURN_AS_TIMEZONE_AWARE": True,
+        },
+    )
+    if parsed:
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=EAST_EIGHT)
+        else:
+            parsed = parsed.astimezone(EAST_EIGHT)
+        label = _extract_date_phrase(text) or parsed.strftime("%Y年%m月%d日")
+        return parsed, label
+
+    label = _extract_date_phrase(text) or "今天"
+    return base_time, label
+
+
 def is_within_days(target: datetime, base: datetime, days: int) -> bool:
     """判断目标日期是否位于指定天数以内。"""
     delta = target - base
@@ -110,6 +198,8 @@ class TimeExpression:
     relative_delta: Optional[timedelta] = None
     periodic_status: Optional[str] = None
     raw_text: Optional[str] = None
+    date_value: Optional[datetime] = None
+    is_date_only: bool = False
 
 
 _relative_pattern = re.compile(
@@ -123,6 +213,7 @@ _relative_pattern = re.compile(
 _periodic_pattern = re.compile(r"每周[一二三四五六日天]|每天|每日|每晚|每早")
 
 _time_pattern = re.compile(r"(?:(上午|下午|早上|晚上|中午))?(\d{1,2})(点|点钟)(?:(\d{1,2})分)?")
+_date_pattern = re.compile(r"(?:(\d{2,4})年)?(\d{1,2})月(\d{1,2})(?:日|号)?")
 
 
 _periodic_map = {
@@ -290,8 +381,26 @@ def _format_unit(value: float, unit: str) -> str:
 def extract_time_expression(text: str, base_time: Optional[datetime] = None) -> Optional[TimeExpression]:
     """抽取文本中的时间表达（绝对时间 / 相对时间 / 周期描述）。"""
     base_time = base_time or now_e8()
-    cleaned = _normalize_time_phrases(text.strip())
+    original = text.strip()
+    cleaned_no_date = re.sub(_date_pattern, "", original)
+    cleaned_no_date = re.sub(r"\d{1,2}月\d{1,2}(?:日|号)?", "", cleaned_no_date)
+    cleaned = _normalize_time_phrases(cleaned_no_date)
     expr = TimeExpression(raw_text=None)
+
+    date_match = _date_pattern.search(original)
+    if date_match:
+        year_str, month_str, day_str = date_match.groups()
+        try:
+            year = int(year_str) if year_str else base_time.year
+            month = int(month_str)
+            day = int(day_str)
+            candidate_date = datetime(year, month, day, tzinfo=EAST_EIGHT)
+            if not year_str and candidate_date <= base_time:
+                candidate_date = datetime(year + 1, month, day, tzinfo=EAST_EIGHT)
+            expr.date_value = candidate_date
+            expr.raw_text = date_match.group(0)
+        except (TypeError, ValueError):
+            expr.date_value = None
 
     for rel_match in _relative_pattern.finditer(cleaned):
         if not rel_match.group(0):
@@ -317,11 +426,20 @@ def extract_time_expression(text: str, base_time: Optional[datetime] = None) -> 
         hour = int(time_match.group(2))
         minute = int(time_match.group(4) or 0)
         resolved_hour = resolve_hour(hour, meridiem, base_time)
-        candidate = base_time.replace(hour=resolved_hour, minute=minute, second=0, microsecond=0)
-        if candidate <= base_time:
-            candidate += timedelta(days=1)
+        if expr.date_value:
+            candidate = expr.date_value.replace(hour=resolved_hour, minute=minute, second=0, microsecond=0)
+        else:
+            candidate = base_time.replace(hour=resolved_hour, minute=minute, second=0, microsecond=0)
+            if candidate <= base_time:
+                candidate += timedelta(days=1)
         expr.datetime_value = candidate
-        expr.raw_text = time_match.group(0)
+        expr.raw_text = expr.raw_text or time_match.group(0)
+        expr.is_date_only = False
+
+    if expr.date_value and expr.datetime_value is None:
+        candidate = expr.date_value.replace(hour=9, minute=0, second=0, microsecond=0)
+        expr.datetime_value = candidate
+        expr.is_date_only = True
 
     if not any([expr.relative_delta, expr.datetime_value, expr.periodic_status]):
         parsed = dateparser.parse(
@@ -339,6 +457,7 @@ def extract_time_expression(text: str, base_time: Optional[datetime] = None) -> 
                 parsed = parsed.replace(tzinfo=EAST_EIGHT)
             expr.datetime_value = parsed
             expr.raw_text = cleaned
+            expr.is_date_only = False
 
     if any([expr.relative_delta, expr.datetime_value, expr.periodic_status]):
         return expr
@@ -376,11 +495,21 @@ def derive_alarm_target(
     target_iso = ""
     alarm_dt: Optional[datetime] = None
 
+    if time_expr.is_date_only and time_expr.datetime_value:
+        alarm_dt = time_expr.datetime_value
+        if not alarm_dt.tzinfo:
+            alarm_dt = alarm_dt.replace(tzinfo=EAST_EIGHT)
+        alarm_dt = alarm_dt.astimezone(EAST_EIGHT)
+        target_iso = alarm_dt.strftime("%Y-%m-%d %H:%M:%S")
+        status = time_expr.periodic_status
+        event = extract_event(query)
+        return target_iso, event, status
+
     if time_expr.relative_delta:
         alarm_dt = base_time + time_expr.relative_delta
     elif time_expr.datetime_value:
         alarm_dt = time_expr.datetime_value
-        if alarm_dt <= base_time:
+        if not time_expr.is_date_only and alarm_dt <= base_time:
             alarm_dt += timedelta(days=1)
 
     if alarm_dt:
@@ -396,11 +525,16 @@ def derive_alarm_target(
 
 def extract_event(text: str) -> Optional[str]:
     """从提醒语句中抽取事件关键词。"""
-    cleaned = _normalize_time_phrases(text)
+    original = text.strip()
+    cleaned = re.sub(_date_pattern, "", original)
+    cleaned = re.sub(r"\d{1,2}月\d{1,2}(?:日|号)?", "", cleaned)
+    cleaned = _normalize_time_phrases(cleaned)
     cleaned = re.sub(r"提醒(我)?", "", cleaned)
     cleaned = re.sub(r"(闹钟|设定|设置|帮我|一下|一个|请|安排|订个?|定个?)", "", cleaned)
     cleaned = re.sub(_relative_pattern, "", cleaned)
     cleaned = re.sub(_time_pattern, "", cleaned)
+    cleaned = re.sub(_date_pattern, "", cleaned)
+    cleaned = re.sub(r"\d{1,2}月\d{1,2}(?:日|号)?", "", cleaned)
     cleaned = cleaned.replace("每周", "").replace("每天", "")
     cleaned = cleaned.replace("今天", "").replace("明天", "").replace("明早", "")
     cleaned = cleaned.replace("后天", "")

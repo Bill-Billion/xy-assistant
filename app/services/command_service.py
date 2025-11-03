@@ -1,19 +1,27 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, date, timedelta
+from difflib import SequenceMatcher
 from time import perf_counter
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Dict, Any, List
+
+from cachetools import TTLCache
 
 from loguru import logger
 
 from app.schemas.request import CommandRequest
 from app.schemas.response import CommandResponse, FunctionAnalysis
-from app.services.conversation import ConversationManager
+from app.services.conversation import ConversationManager, ConversationState
 from app.services.intent_classifier import IntentClassifier
 from app.core.config import Settings
+from app.services.llm_client import DoubaoClient
 from app.services.weather_broadcast import WeatherBroadcastGenerator, WeatherBroadcastResult
+from app.services.high_confidence_rules import HighConfidenceRuleEngine, RuleMatch
 from app.services.weather_service import WeatherService
-from app.utils.time_utils import describe_alarm_target, now_e8
+from app.services.prompt_templates import build_reply_prompt, build_user_selection_prompt
+from app.utils.calendar_utils import format_lunar_summary, get_lunar_info
+from app.utils.time_utils import describe_alarm_target, now_e8, sanitize_person_name, EAST_EIGHT
 
 
 HEALTH_MONITOR_RESULTS = {
@@ -30,7 +38,7 @@ HEALTH_MONITOR_RESULTS = {
     "睡眠监测",
 }
 
-REQUIRES_SELECTION_RESULTS = HEALTH_MONITOR_RESULTS | {"健康评估", "健康画像"}
+REQUIRES_SELECTION_RESULTS = HEALTH_MONITOR_RESULTS | {"健康评估", "健康画像", "小雅医生"}
 
 
 _WEATHER_CONDITION_TEXT = {
@@ -186,6 +194,35 @@ def _render_template(function_analysis: FunctionAnalysis) -> str | None:
             return " ".join(part for part in message_parts if part).strip()
         return summary
 
+    if result == "播报时间":
+        try:
+            current_time = now_e8().strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            current_time = "当前时间"
+        return f"现在是{current_time}，祝您行程安排顺利。"
+
+    if result == "日期时间和万年历":
+        target_iso = function_analysis.parsed_time or ""
+        target_dt: Optional[datetime] = None
+        if target_iso:
+            try:
+                target_dt = datetime.fromisoformat(target_iso)
+                if target_dt.tzinfo is None:
+                    target_dt = target_dt.replace(tzinfo=EAST_EIGHT)
+                else:
+                    target_dt = target_dt.astimezone(EAST_EIGHT)
+            except ValueError:
+                target_dt = None
+        if not target_dt:
+            target_dt = now_e8()
+        lunar = get_lunar_info(target_dt)
+        summary = format_lunar_summary(lunar)
+        label = (function_analysis.time_text or "当前日期").strip()
+        date_text = target_dt.strftime("%Y年%m月%d日")
+        if summary:
+            return f"{label}（{date_text}）的农历信息：{summary}。"
+        return f"{label}（{date_text}）暂无可用的农历详细信息，我会持续关注更新。"
+
     if result in HEALTH_MONITOR_RESULTS:
         if function_analysis.target:
             return f"好的，我已为{function_analysis.target}打开{result}功能。"
@@ -253,6 +290,8 @@ class CommandService:
         settings: Settings,
         weather_service: WeatherService | None = None,
         weather_broadcast_generator: WeatherBroadcastGenerator | None = None,
+        rule_engine: HighConfidenceRuleEngine | None = None,
+        reply_llm_client: DoubaoClient | None = None,
     ) -> None:
         # 意图识别器：将用户输入转换为结构化 function_analysis。
         self._intent_classifier = intent_classifier
@@ -261,6 +300,189 @@ class CommandService:
         self._settings = settings
         self._weather_service = weather_service
         self._weather_broadcast_generator = weather_broadcast_generator
+        self._rule_engine = rule_engine or HighConfidenceRuleEngine(settings.weather_default_city)
+        self._reply_llm_client = reply_llm_client
+        self._reply_prompt = build_reply_prompt() if reply_llm_client else None
+        self._selection_prompt = build_user_selection_prompt() if reply_llm_client else None
+        self._reply_cache: TTLCache | None = TTLCache(maxsize=256, ttl=60) if reply_llm_client else None
+        self._selection_cache: TTLCache | None = TTLCache(maxsize=256, ttl=300) if reply_llm_client else None
+
+    async def _handle_user_selection(
+        self,
+        *,
+        session_id: str,
+        query: str,
+        meta_payload: Dict[str, Any],
+        conversation_state: ConversationState,
+    ) -> Optional[CommandResponse]:
+        last_analysis_dict = conversation_state.last_function_analysis or {}
+        last_result = (last_analysis_dict.get("result") or "").strip()
+        if not last_result or last_result not in REQUIRES_SELECTION_RESULTS:
+            return None
+
+        candidates = self._extract_user_candidates(meta_payload, conversation_state)
+        if not candidates:
+            return None
+
+        name = sanitize_person_name(query) or query.strip()
+        if not name:
+            return None
+
+        matched = self._match_candidate(name, candidates)
+        if not matched:
+            matched = await self._llm_select_candidate(
+                query=name,
+                candidates=candidates,
+                session_id=session_id,
+            )
+        if not matched:
+            return None
+
+        analysis_model = FunctionAnalysis.model_validate(last_analysis_dict)
+        analysis_model.target = matched
+        analysis_model.confidence = max(analysis_model.confidence or 0.0, 0.92)
+        analysis_model.need_clarify = False
+        analysis_model.clarify_message = None
+        if analysis_model.reasoning:
+            analysis_model.reasoning += f"；目标用户匹配为{matched}"
+        else:
+            analysis_model.reasoning = f"目标用户匹配为{matched}"
+
+        reply_message = _render_template(analysis_model) or _compose_response_message(
+            analysis_model, ""
+        )
+        raw_output = ""
+        function_analysis = analysis_model
+
+        self._conversation_manager.update_state(
+            session_id=session_id,
+            query=query,
+            response_message=reply_message,
+            function_analysis=function_analysis,
+            raw_llm_output=raw_output,
+            user_candidates=candidates,
+        )
+
+        requires_selection = False
+        response = CommandResponse(
+            code=200,
+            msg=reply_message,
+            sessionId=session_id,
+            requiresSelection=requires_selection,
+            function_analysis=function_analysis,
+        )
+        logger.info(
+            "user selection resolved",
+            session_id=session_id,
+            target=matched,
+            candidates=candidates,
+        )
+        return response
+
+    @staticmethod
+    def _extract_user_candidates(
+        meta_payload: Dict[str, Any],
+        conversation_state: ConversationState,
+    ) -> List[str]:
+        raw = meta_payload.get("user_candidates")
+        candidates: List[str] = []
+        if isinstance(raw, str):
+            candidates = [item.strip() for item in raw.split(",") if item.strip()]
+        elif isinstance(raw, list):
+            candidates = [str(item).strip() for item in raw if str(item).strip()]
+        if not candidates:
+            candidates = conversation_state.user_candidates
+        if candidates and candidates != conversation_state.user_candidates:
+            conversation_state.user_candidates = candidates
+        return candidates
+
+    def _match_candidate(self, name: str, candidates: List[str]) -> Optional[str]:
+        if not name or not candidates:
+            return None
+        best_candidate = None
+        best_score = 0.0
+        for candidate in candidates:
+            sanitized_candidate = sanitize_person_name(candidate) or candidate.strip()
+            score = self._name_similarity(name, sanitized_candidate)
+            if score > best_score:
+                best_score = score
+                best_candidate = candidate
+        if best_score >= 0.55:
+            return best_candidate
+        return None
+
+    def _name_similarity(self, lhs: str, rhs: str) -> float:
+        primary = SequenceMatcher(None, lhs, rhs).ratio()
+        pinyin_ratio = 0.0
+        lhs_py = self._to_pinyin(lhs)
+        rhs_py = self._to_pinyin(rhs)
+        if lhs_py and rhs_py:
+            pinyin_ratio = SequenceMatcher(None, lhs_py, rhs_py).ratio()
+        return max(primary, pinyin_ratio)
+
+    @staticmethod
+    def _to_pinyin(text: str) -> Optional[str]:
+        try:
+            from pypinyin import lazy_pinyin
+
+            pinyin_tokens = lazy_pinyin(text)
+            if not pinyin_tokens:
+                return None
+            return "".join(pinyin_tokens)
+        except Exception:  # noqa: BLE001
+            return None
+
+    async def _llm_select_candidate(
+        self,
+        *,
+        query: str,
+        candidates: List[str],
+        session_id: str,
+    ) -> Optional[str]:
+        if not self._reply_llm_client or not self._selection_prompt or not candidates:
+            return None
+        cache_key = None
+        if self._selection_cache is not None:
+            cache_key = (query, tuple(candidates))
+            cached = self._selection_cache.get(cache_key)
+            if cached:
+                return cached
+
+        payload = {
+            "input": query,
+            "candidates": candidates,
+        }
+        messages = [{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
+        try:
+            raw_text, parsed = await self._reply_llm_client.chat(
+                system_prompt=self._selection_prompt,
+                messages=messages,
+                response_format={"type": "json_object"},
+                overrides={"max_tokens": 50, "temperature": 0.1, "top_p": 0.9},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("user selection LLM failed", error=str(exc), session_id=session_id)
+            return None
+
+        if isinstance(parsed, dict):
+            candidate = parsed.get("match") or parsed.get("name") or parsed.get("target")
+            if candidate and candidate in candidates:
+                if cache_key and self._selection_cache is not None:
+                    self._selection_cache[cache_key] = candidate
+                return candidate
+        logger.debug(
+            "user selection llm parsed",
+            session_id=session_id,
+            query=query,
+            raw_text=raw_text,
+            parsed=parsed,
+        )
+        candidate = (raw_text or "").strip()
+        if candidate in candidates:
+            if cache_key and self._selection_cache is not None:
+                self._selection_cache[cache_key] = candidate
+            return candidate
+        return None
 
     async def _generate_weather_broadcast(
         self,
@@ -275,6 +497,52 @@ class CommandService:
             analysis=analysis,
             user_query=user_query,
         )
+
+    async def _generate_structured_reply(
+        self,
+        *,
+        session_id: str,
+        query: str,
+        function_analysis: FunctionAnalysis,
+        conversation_state: ConversationState,
+        meta: Dict[str, Any],
+    ) -> str:
+        if not self._reply_llm_client or not self._reply_prompt:
+            return ""
+        history_messages = conversation_state.as_messages(limit=2)
+        fa_dict = function_analysis.model_dump()
+        cache_key = None
+        if self._reply_cache is not None:
+            cache_key = (
+                query.strip(),
+                json.dumps(fa_dict, ensure_ascii=False, sort_keys=True),
+            )
+            cached = self._reply_cache.get(cache_key)
+            if cached:
+                return cached
+
+        payload = {
+            "session_id": session_id,
+            "query": query,
+            "function_analysis": fa_dict,
+        }
+        if meta:
+            payload["meta"] = meta
+        user_message = json.dumps(payload, ensure_ascii=False)
+        messages = [*history_messages, {"role": "user", "content": user_message}]
+        try:
+            raw_text, _ = await self._reply_llm_client.chat(
+                system_prompt=self._reply_prompt,
+                messages=messages,
+                overrides={"max_tokens": 200, "temperature": 0.4, "top_p": 0.9},
+            )
+            reply_text = raw_text.strip()
+            if cache_key and self._reply_cache is not None and reply_text:
+                self._reply_cache[cache_key] = reply_text
+            return reply_text
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("short reply generation failed", error=str(exc), session_id=session_id)
+            return ""
 
     async def handle_command(self, payload: CommandRequest) -> CommandResponse:
         session_id = payload.session_id or self._conversation_manager.generate_session_id()
@@ -306,29 +574,54 @@ class CommandService:
             meta=payload.meta,
         )
 
+        selection_response = await self._handle_user_selection(
+            session_id=session_id,
+            query=payload.query,
+            meta_payload=meta_payload,
+            conversation_state=context,
+        )
+        if selection_response:
+            return selection_response
+
         overall_start = perf_counter()
+        rule_match: RuleMatch | None = None
+        if self._rule_engine:
+            rule_match = self._rule_engine.evaluate(payload.query, meta_payload)
+
         try:
-            classify_start = perf_counter()
-            # 核心步骤：调用意图分类器，结合大模型与规则得到结构化分析。
-            classification = await self._intent_classifier.classify(
-                session_id=session_id,
-                query=payload.query,
-                meta=meta_payload,
-                conversation_state=context,
-            )
-            logger.debug(
-                "timing handle_command",
-                step="intent_classifier",
-                duration=round(perf_counter() - classify_start, 3),
-                session_id=session_id,
-            )
-            # 将原始结果转为响应模型，确保字段类型一致。
-            function_analysis = FunctionAnalysis.model_validate(classification.function_analysis)
-            reply_message = classification.reply_message
-            raw_output = classification.raw_llm_output
-            weather_context = None
-            weather_detail_payload = function_analysis.weather_detail or {}
-            weather_needs_realtime = getattr(function_analysis, "weather_needs_realtime", None)
+            if rule_match:
+                rule_source = "rule"
+                function_analysis = rule_match.analysis
+                reply_message = ""
+                raw_output = ""
+                weather_context = None
+                weather_detail_payload = rule_match.weather_detail or {}
+                weather_needs_realtime = rule_match.needs_realtime_weather
+                if weather_detail_payload:
+                    function_analysis.weather_detail = dict(weather_detail_payload)
+            else:
+                classify_start = perf_counter()
+                # 核心步骤：调用意图分类器，结合大模型与规则得到结构化分析。
+                classification = await self._intent_classifier.classify(
+                    session_id=session_id,
+                    query=payload.query,
+                    meta=meta_payload,
+                    conversation_state=context,
+                )
+                logger.debug(
+                    "timing handle_command",
+                    step="intent_classifier",
+                    duration=round(perf_counter() - classify_start, 3),
+                    session_id=session_id,
+                )
+                # 将原始结果转为响应模型，确保字段类型一致。
+                function_analysis = FunctionAnalysis.model_validate(classification.function_analysis)
+                reply_message = classification.reply_message
+                raw_output = classification.raw_llm_output
+                weather_context = None
+                weather_detail_payload = function_analysis.weather_detail or {}
+                weather_needs_realtime = getattr(function_analysis, "weather_needs_realtime", None)
+                rule_source = "llm"
 
             if (
                 self._weather_service
@@ -418,6 +711,15 @@ class CommandService:
                         function_analysis.reasoning += "；" + "；".join(source_notes)
                     else:
                         function_analysis.reasoning = "；".join(source_notes)
+
+            if rule_match and not reply_message:
+                reply_message = await self._generate_structured_reply(
+                    session_id=session_id,
+                    query=payload.query,
+                    function_analysis=function_analysis,
+                    conversation_state=context,
+                    meta=meta_payload,
+                )
         except Exception as exc:  # noqa: BLE001
             logger.exception("classification failed, using fallback", error=str(exc))
             function_analysis = FunctionAnalysis(
@@ -471,12 +773,14 @@ class CommandService:
         elif function_analysis.need_clarify and not function_analysis.clarify_message:
             use_fallback = True
 
+        reply_origin = "rule" if rule_match else "llm"
         if use_fallback:
-            response_message = _compose_response_message(function_analysis, trimmed_reply)
-            reply_source = "fallback"
+            fallback_candidate = trimmed_reply or (function_analysis.result or "")
+            response_message = _compose_response_message(function_analysis, fallback_candidate)
+            reply_source = reply_origin if rule_match else "fallback"
         else:
             response_message = trimmed_reply
-            reply_source = "llm"
+            reply_source = reply_origin
 
         logger.debug(
             "classification_output",
@@ -484,6 +788,7 @@ class CommandService:
             result=function_analysis.model_dump() if hasattr(function_analysis, "model_dump") else getattr(function_analysis, '__dict__', function_analysis),
             raw_llm_output=raw_output,
             reply_source=reply_source,
+            rule_hit=bool(rule_match),
         )
         logger.debug(
             "timing handle_command",

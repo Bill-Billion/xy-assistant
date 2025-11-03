@@ -74,6 +74,8 @@ def test_calendar_rule_from_prompt():
     result = run_rules("明天适合搬家吗")
     assert result
     assert result.intent_code == IntentCode.CALENDAR_GENERAL
+    assert result.parsed_time
+    assert result.time_text == "明天"
 
 
 def test_home_service_recognition():

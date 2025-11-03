@@ -6,6 +6,7 @@ from app.utils.time_utils import (
     extract_time_expression,
     now_e8,
     parse_weather_date,
+    resolve_calendar_target,
 )
 
 
@@ -94,3 +95,18 @@ def test_extract_event_removes_relative_prefix():
     assert target  # 解析出某个时间即可，由上层再结合 LLM 校正
     assert event == "买火车票"
     assert status is None
+
+
+def test_resolve_calendar_target_tomorrow():
+    base = datetime(2025, 10, 30, 10, 0, tzinfo=EAST_EIGHT)
+    target, label = resolve_calendar_target("明天农历几号", base)
+    assert target.date() == (base + timedelta(days=1)).date()
+    assert label == "明天"
+
+
+def test_resolve_calendar_target_specific_date():
+    base = datetime(2025, 9, 20, 10, 0, tzinfo=EAST_EIGHT)
+    target, label = resolve_calendar_target("10月2日黄历怎么样", base)
+    assert target.month == 10
+    assert target.day == 2
+    assert label in {"10月2日", "10月02日"}
