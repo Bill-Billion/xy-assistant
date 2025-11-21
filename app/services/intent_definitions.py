@@ -62,6 +62,8 @@ class IntentCode(str, Enum):
     ENTERTAINMENT_MUSIC = "ENTERTAINMENT_MUSIC"
     ENTERTAINMENT_MUSIC_SPECIFIC = "ENTERTAINMENT_MUSIC_SPECIFIC"
     ENTERTAINMENT_AUDIOBOOK = "ENTERTAINMENT_AUDIOBOOK"
+    ENTERTAINMENT_RESUME = "ENTERTAINMENT_RESUME"
+    JOKE_MODE = "JOKE_MODE"
     GAME_DOU_DI_ZHU = "GAME_DOU_DI_ZHU"
     GAME_CHINESE_CHESS = "GAME_CHINESE_CHESS"
     CHAT = "CHAT"
@@ -147,6 +149,8 @@ INTENT_DEFINITIONS: dict[IntentCode, IntentDefinition] = {
     IntentCode.ENTERTAINMENT_MUSIC: IntentDefinition(IntentCode.ENTERTAINMENT_MUSIC, "小雅音乐"),
     IntentCode.ENTERTAINMENT_MUSIC_SPECIFIC: IntentDefinition(IntentCode.ENTERTAINMENT_MUSIC_SPECIFIC, "小雅音乐", True),
     IntentCode.ENTERTAINMENT_AUDIOBOOK: IntentDefinition(IntentCode.ENTERTAINMENT_AUDIOBOOK, "小雅听书"),
+    IntentCode.ENTERTAINMENT_RESUME: IntentDefinition(IntentCode.ENTERTAINMENT_RESUME, "继续播放"),
+    IntentCode.JOKE_MODE: IntentDefinition(IntentCode.JOKE_MODE, "笑话模式"),
     IntentCode.GAME_DOU_DI_ZHU: IntentDefinition(IntentCode.GAME_DOU_DI_ZHU, "斗地主"),
     IntentCode.GAME_CHINESE_CHESS: IntentDefinition(IntentCode.GAME_CHINESE_CHESS, "中国象棋"),
     IntentCode.CHAT: IntentDefinition(IntentCode.CHAT, "语音陪伴或聊天"),

@@ -4,6 +4,8 @@ from app.utils.time_utils import (
     EAST_EIGHT,
     derive_alarm_target,
     extract_time_expression,
+    extract_person_name,
+    sanitize_person_name,
     now_e8,
     parse_weather_date,
     resolve_calendar_target,
@@ -110,3 +112,19 @@ def test_resolve_calendar_target_specific_date():
     assert target.month == 10
     assert target.day == 2
     assert label in {"10月2日", "10月02日"}
+
+
+def test_sanitize_person_name_trims_measure_suffix():
+    assert sanitize_person_name("小唐测") == "小唐"
+
+
+def test_extract_person_name_for_measurement():
+    assert extract_person_name("我想给小唐测血压") == "小唐"
+
+
+def test_extract_person_name_for_relative():
+    assert extract_person_name("帮我给爷爷量血压") == "爷爷"
+
+
+def test_extract_person_name_for_doctor():
+    assert extract_person_name("我要联系张三医生") == "张三"

@@ -10,7 +10,8 @@ from loguru import logger
 from app.schemas.response import FunctionAnalysis
 from app.services.intent_definitions import IntentCode
 from app.services.intent_rules import RuleResult, run_rules
-from app.utils.time_utils import now_e8
+from app.utils.time_utils import now_e8, EAST_EIGHT
+from app.utils.location_utils import normalize_city_name
 
 
 NEGATIVE_TOKENS = {
@@ -92,6 +93,8 @@ ACTIONABLE_INTENTS = WEATHER_INTENTS | {
     IntentCode.GAME_DOU_DI_ZHU,
     IntentCode.GAME_CHINESE_CHESS,
     IntentCode.CHAT,
+    IntentCode.JOKE_MODE,
+    IntentCode.ENTERTAINMENT_RESUME,
     IntentCode.MALL_GENERAL,
     IntentCode.MALL_DIGITAL_HEALTH_ROBOT,
     IntentCode.MALL_HEALTH_MONITOR_TERMINAL,
@@ -182,7 +185,7 @@ class HighConfidenceRuleEngine:
         needs_realtime_weather = True
 
         if rule_result.intent_code in WEATHER_INTENTS:
-            weather_detail = self._build_weather_detail(rule_result.intent_code, rule_result.target, query)
+            weather_detail = self._build_weather_detail(rule_result, query)
             needs_realtime_weather = weather_detail.get("needs_realtime_data", True) if weather_detail else True
             if rule_result.intent_code == IntentCode.WEATHER_OUT_OF_RANGE:
                 # 远期天气无需实时接口
@@ -202,30 +205,34 @@ class HighConfidenceRuleEngine:
             needs_realtime_weather=needs_realtime_weather,
         )
 
-    def _build_weather_detail(self, intent: IntentCode, target: Optional[str], query: str) -> Dict[str, Any]:
+    def _build_weather_detail(self, rule_result: RuleResult, query: str) -> Dict[str, Any]:
         """构造天气查询所需的简要结构，便于后续 WeatherService 拉取数据。"""
         base_time = now_e8()
         target_date: Optional[datetime] = None
         location_name = self._extract_location(query) or self._default_city
-
+        intent = rule_result.intent_code
+        target = rule_result.target
+        parsed_time = getattr(rule_result, "parsed_time", None)
         if intent == IntentCode.WEATHER_TODAY:
             target_date = base_time
         elif intent == IntentCode.WEATHER_TOMORROW:
             target_date = base_time + timedelta(days=1)
         elif intent == IntentCode.WEATHER_DAY_AFTER:
             target_date = base_time + timedelta(days=2)
-        elif intent == IntentCode.WEATHER_SPECIFIC and target:
-            # target 格式 mmdd，需拼接年份
-            try:
-                month = int(target[:2])
-                day = int(target[2:])
-                year = base_time.year
-                candidate = datetime(year, month, day)
-                if candidate < base_time:
-                    candidate = datetime(year + 1, month, day)
-                target_date = candidate
-            except (ValueError, TypeError):
-                target_date = None
+        elif intent == IntentCode.WEATHER_SPECIFIC:
+            candidate: Optional[datetime] = None
+            iso_candidate = parsed_time or target
+            if iso_candidate:
+                try:
+                    candidate = datetime.fromisoformat(iso_candidate)
+                except ValueError:
+                    try:
+                        candidate = datetime.strptime(iso_candidate, "%Y-%m-%d")
+                    except ValueError:
+                        candidate = None
+            if candidate is not None and not candidate.tzinfo:
+                candidate = candidate.replace(tzinfo=EAST_EIGHT)
+            target_date = candidate
 
         detail: Dict[str, Any] = {
             "location": location_name,
@@ -234,8 +241,14 @@ class HighConfidenceRuleEngine:
         }
         if target_date:
             detail["target_date"] = target_date.strftime("%Y-%m-%d")
-            detail["target_date_text"] = target_date.strftime("%Y-%m-%d")
-            detail["target_date_confidence"] = 1.0
+            phrase = getattr(rule_result, "time_text", None) or target_date.strftime("%Y-%m-%d")
+            detail["target_date_text"] = phrase
+            confidence = getattr(rule_result, "time_confidence", None)
+            try:
+                confidence_value = float(confidence) if confidence is not None else 0.95
+            except (TypeError, ValueError):
+                confidence_value = 0.95
+            detail["target_date_confidence"] = confidence_value
         return detail
 
     def _extract_location(self, query: str) -> Optional[str]:
@@ -259,7 +272,12 @@ class HighConfidenceRuleEngine:
             # 避免时间词、泛指词
             if candidate in {"今天", "明天", "后天"}:
                 continue
-            if not candidate.endswith(self._CITY_SUFFIXES) and len(candidate) <= 5:
-                candidate += "市"
-            return candidate
+            if not candidate or any(char.isdigit() for char in candidate):
+                continue
+            if not all("\u4e00" <= ch <= "\u9fff" for ch in candidate):
+                continue
+            if len(candidate) < 2:
+                continue
+            normalized, _ = normalize_city_name(candidate, self._default_city)
+            return normalized
         return None

@@ -34,40 +34,66 @@ _DATE_LABEL_PATTERNS = [
     r"\d{1,2}号",
 ]
 
+_WEEKDAY_MAP = {
+    "一": 0,
+    "二": 1,
+    "三": 2,
+    "四": 3,
+    "五": 4,
+    "六": 5,
+    "日": 6,
+    "天": 6,
+    "1": 0,
+    "2": 1,
+    "3": 2,
+    "4": 3,
+    "5": 4,
+    "6": 5,
+    "7": 6,
+}
+
+_WEEK_PREFIX_PATTERN = re.compile(r"(?P<prefix>下+|这|本)?(?:周|星期|礼拜)(?P<day>[一二三四五六日天1234567])")
+_RELATIVE_DAY_PATTERN = re.compile(r"(?P<num>[零〇一二三四五六七八九十百千万两兩\d]+)天后")
+_LUNAR_SPECIFIC_PATTERN = re.compile(
+    r"农历(?P<leap>闰)?(?P<month>[正冬腊一二三四五六七八九十0-9两兩]+)月(?P<day>[初十廿卅三十二一二三四五六七八九十0-9两兩]+)"
+)
+
+_SPECIAL_MONTH_MAP = {
+    "正": 1,
+    "腊": 12,
+    "冬": 11,
+}
+
 
 # 人名净化列表：用于去除命令中的功能词，保留真实人名或称谓。
 PERSON_NAME_STRIP_TOKENS = [
-    "血压",
-    "血氧",
-    "心率",
-    "血糖",
-    "血脂",
-    "体重",
-    "体温",
-    "血红蛋白",
-    "尿酸",
-    "睡眠",
-    "监测",
-    "提醒",
-    "闹钟",
-    "电话",
-    "视频",
+    "小雅",
+    "一下",
+    "一下下",
+    "请",
+    "麻烦",
+    "帮我",
+    "给我",
+    "我想",
+    "我想要",
+    "我需要",
+    "想给",
+    "想要",
+    "想请",
+]
+
+PERSON_NAME_SUFFIX_TOKENS = [
     "医生",
     "大夫",
     "老师",
-    "服务",
-    "计划",
-    "联系",
-    "预约",
-    "设置",
-    "打开",
-    "查看",
-    "小雅",
-    "一下",
-    "帮我",
-    "给我",
-    "的",
+    "师傅",
+    "主任",
+    "护士",
 ]
+
+PERSON_NAME_MEASURE_SUFFIX_PATTERN = re.compile(
+    r"(测量|量血压|测血压|量血糖|测血糖|量血脂|测血脂|量血|测血|测体温|量体温|监测|检测|检查|测|量)$"
+)
 
 PERSON_NAME_LEADING_TOKENS = [
     "看一下",
@@ -86,25 +112,36 @@ PERSON_NAME_LEADING_TOKENS = [
 
 def sanitize_person_name(name: str) -> Optional[str]:
     """将识别到的人名剔除功能词后返回，若为空则返回 None。"""
-    cleaned = name
+    if not name:
+        return None
+    cleaned = name.strip()
+    if not cleaned:
+        return None
+    for token in PERSON_NAME_LEADING_TOKENS:
+        if cleaned.startswith(token):
+            cleaned = cleaned[len(token):].strip()
     for token in PERSON_NAME_STRIP_TOKENS:
         cleaned = cleaned.replace(token, "")
     cleaned = cleaned.strip()
-    for token in PERSON_NAME_LEADING_TOKENS:
-        if cleaned.startswith(token):
-            cleaned = cleaned[len(token):]
     if cleaned.endswith("的"):
-        cleaned = cleaned[:-1]
+        cleaned = cleaned[:-1].strip()
+    for suffix in PERSON_NAME_SUFFIX_TOKENS:
+        if cleaned.endswith(suffix) and len(cleaned) > len(suffix):
+            cleaned = cleaned[: -len(suffix)].strip()
+    cleaned = PERSON_NAME_MEASURE_SUFFIX_PATTERN.sub("", cleaned).strip()
     # 限制长度，避免过长字段
     cleaned = cleaned[:8]
+    if cleaned in {"", "我", "你", "他", "她", "它"}:
+        return None
     return cleaned or None
 
 
 @dataclass
 class ParsedWeatherDate:
-    """天气解析结果，kind 表示 today/tomorrow 或具体日期。"""
+    """天气解析结果，kind 表示 today/tomorrow 或具体日期，phrase 保留原始描述。"""
     kind: str
     value: Optional[datetime] = None
+    phrase: Optional[str] = None
 
 
 def now_e8() -> datetime:
@@ -114,22 +151,47 @@ def now_e8() -> datetime:
 
 def parse_weather_date(text: str, base_time: Optional[datetime] = None) -> Optional[ParsedWeatherDate]:
     """解析用户文本中的日期关键词，返回日期类型与具体值。"""
-    base_time = base_time or now_e8()
+    base_time = (base_time or now_e8()).astimezone(EAST_EIGHT)
     text = text.strip()
     if "今天" in text:
-        return ParsedWeatherDate("today", base_time)
-    if "明天" in text:
-        return ParsedWeatherDate("tomorrow", base_time + timedelta(days=1))
-    if "后天" in text:
-        return ParsedWeatherDate("day_after", base_time + timedelta(days=2))
+        return ParsedWeatherDate("today", base_time, phrase="今天")
+    if "明天" in text and "天后" not in text:
+        return ParsedWeatherDate("tomorrow", base_time + timedelta(days=1), phrase="明天")
+    if "后天" in text and "天后" not in text:
+        return ParsedWeatherDate("day_after", base_time + timedelta(days=2), phrase="后天")
+    if "大后天" in text:
+        return ParsedWeatherDate("specific", base_time + timedelta(days=3), phrase="大后天")
+
+    if relative := _extract_relative_days(text, base_time):
+        return relative
+    if weekday_date := _extract_weekday_date(text, base_time):
+        return weekday_date
 
     match = re.search(r"(?:(\d{4})年)?(\d{1,2})月(\d{1,2})日?", text)
     if match:
         year = int(match.group(1)) if match.group(1) else base_time.year
         month = int(match.group(2))
         day = int(match.group(3))
-        parsed_date = datetime(year=year, month=month, day=day, tzinfo=EAST_EIGHT)
-        return ParsedWeatherDate("specific", parsed_date)
+        try:
+            parsed_date = datetime(year=year, month=month, day=day, tzinfo=EAST_EIGHT)
+        except ValueError:
+            return None
+        return ParsedWeatherDate("specific", parsed_date, phrase=match.group(0))
+
+    parsed = dateparser.parse(
+        text,
+        languages=["zh"],
+        settings={
+            "RELATIVE_BASE": base_time,
+            "PREFER_DATES_FROM": "future",
+            "TIMEZONE": "Asia/Shanghai",
+            "RETURN_AS_TIMEZONE_AWARE": True,
+        },
+    )
+    if parsed:
+        parsed = parsed.astimezone(EAST_EIGHT)
+        phrase = _extract_date_phrase(text) or text
+        return ParsedWeatherDate("specific", parsed.replace(hour=0, minute=0, second=0, microsecond=0), phrase=phrase)
 
     return None
 
@@ -142,11 +204,192 @@ def _extract_date_phrase(text: str) -> Optional[str]:
     return None
 
 
+def _parse_numeric_text(raw: str) -> Optional[int]:
+    raw = raw.strip()
+    if not raw:
+        return None
+    if raw.isdigit():
+        return int(raw)
+    if cn2an is not None:
+        try:
+            return int(cn2an.cn2an(raw, "smart"))
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def _resolve_weekday(base_time: datetime, weekday_index: int, offset_weeks: int, same_week_keyword: bool) -> datetime:
+    monday = base_time - timedelta(days=base_time.weekday())
+    candidate = monday + timedelta(days=weekday_index + offset_weeks * 7)
+    if same_week_keyword and candidate.date() < base_time.date():
+        candidate += timedelta(days=7)
+    return candidate
+
+
+def _extract_weekday_date(text: str, base_time: datetime) -> Optional[ParsedWeatherDate]:
+    match = _WEEK_PREFIX_PATTERN.search(text)
+    if not match:
+        return None
+    day_token = match.group("day")
+    if day_token not in _WEEKDAY_MAP:
+        return None
+    prefix = match.group("prefix") or ""
+    weekday_index = _WEEKDAY_MAP[day_token]
+    offset_weeks = 0
+    same_week_keyword = prefix in {"", "这", "本"}
+    if prefix.startswith("下"):
+        offset_weeks = len(prefix)
+    candidate = _resolve_weekday(base_time, weekday_index, offset_weeks if prefix.startswith("下") else 0, same_week_keyword)
+    return ParsedWeatherDate(kind="specific", value=candidate.replace(hour=0, minute=0, second=0, microsecond=0), phrase=match.group(0))
+
+
+def _extract_relative_days(text: str, base_time: datetime) -> Optional[ParsedWeatherDate]:
+    match = _RELATIVE_DAY_PATTERN.search(text)
+    if not match:
+        return None
+    num_raw = match.group("num")
+    days = _parse_numeric_text(num_raw)
+    if days is None:
+        return None
+    candidate = base_time + timedelta(days=days)
+    return ParsedWeatherDate(kind="specific", value=candidate.replace(hour=0, minute=0, second=0, microsecond=0), phrase=match.group(0))
+
+
+def _convert_lunar_month(month_text: str) -> Optional[int]:
+    text = month_text.replace("农历", "").replace("月", "").replace("闰", "").strip()
+    if not text:
+        return None
+    if text in _SPECIAL_MONTH_MAP:
+        return _SPECIAL_MONTH_MAP[text]
+    if text.isdigit():
+        value = int(text)
+        return value if 1 <= value <= 12 else None
+    # 处理十月、十一、十二
+    replacements = {
+        "十": 10,
+        "十 一": 11,
+        "十一": 11,
+        "十 二": 12,
+        "十二": 12,
+    }
+    if text in replacements:
+        return replacements[text]
+    if cn2an is not None:
+        try:
+            value = int(cn2an.cn2an(text, "smart"))
+            return value if 1 <= value <= 12 else None
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def _convert_lunar_day(day_text: str) -> Optional[int]:
+    text = day_text.replace("日", "").replace("号", "").strip()
+    if not text:
+        return None
+    if text.startswith("初"):
+        base = _parse_numeric_text(text[1:])
+        return base if base is not None else None
+    if text.startswith("廿"):
+        if text == "廿":
+            return 20
+        rest = text[1:]
+        value = _parse_numeric_text(rest)
+        if value is None:
+            return None
+        return 20 + value
+    if text.startswith("卅") or text == "三十":
+        if text in {"卅", "三十"}:
+            return 30
+        rest = text[1:]
+        value = _parse_numeric_text(rest)
+        if value is None:
+            return None
+        return 30 + value
+    if text in {"二十", "二十"}:
+        return 20
+    if text in {"二十一", "二十 一"}:
+        return 21
+    if text in {"二十二", "二十 二"}:
+        return 22
+    if text in {"二十三", "二十 三"}:
+        return 23
+    if text in {"二十四", "二十 四"}:
+        return 24
+    if text in {"二十五", "二十 五"}:
+        return 25
+    if text in {"二十六", "二十 六"}:
+        return 26
+    if text in {"二十七", "二十 七"}:
+        return 27
+    if text in {"二十八", "二十 八"}:
+        return 28
+    if text in {"二十九", "二十 九"}:
+        return 29
+    if text in {"三十一", "三十 一"}:
+        return 31
+    if cn2an is not None:
+        try:
+            value = int(cn2an.cn2an(text, "smart"))
+            return value if 1 <= value <= 30 else None
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def parse_lunar_request(text: str, base_time: Optional[datetime] = None) -> Optional[Tuple[datetime, str]]:
+    match = _LUNAR_SPECIFIC_PATTERN.search(text)
+    if not match:
+        return None
+
+    month = _convert_lunar_month(match.group("month"))
+    day = _convert_lunar_day(match.group("day"))
+    is_leap = bool(match.group("leap"))
+    if month is None or day is None:
+        return None
+
+    base = (base_time or now_e8()).astimezone(EAST_EIGHT)
+    for offset in range(0, 730):
+        candidate = base + timedelta(days=offset)
+        solar = Solar.fromYmd(candidate.year, candidate.month, candidate.day)
+        lunar = solar.getLunar()
+        try:
+            lunar_month = lunar.getMonth()
+            lunar_day = lunar.getDay()
+            leap_flag = False
+            if hasattr(lunar, "isLeap"):
+                leap_flag = lunar.isLeap()
+            elif hasattr(lunar, "isLeapMonth"):
+                leap_flag = lunar.isLeapMonth()
+            if lunar_month < 0:
+                lunar_month = abs(lunar_month)
+                leap_flag = True
+        except AttributeError:
+            lunar_month_text = lunar.getMonthInChinese()
+            lunar_day_text = lunar.getDayInChinese()
+            leap_flag = "闰" in lunar_month_text
+            lunar_month = _convert_lunar_month(lunar_month_text)
+            lunar_day = _convert_lunar_day(lunar_day_text)
+        if lunar_month is None or lunar_day is None:
+            continue
+        if lunar_month == month and lunar_day == day:
+            if is_leap and not leap_flag:
+                continue
+            if not is_leap and leap_flag:
+                continue
+            return candidate.replace(hour=0, minute=0, second=0, microsecond=0), match.group(0)
+    return None
+
+
 def resolve_calendar_target(
     text: str,
     base_time: Optional[datetime] = None,
 ) -> Tuple[datetime, str]:
     """为日历/农历查询确定目标日期及描述文本。"""
+    lunar_result = parse_lunar_request(text, base_time)
+    if lunar_result:
+        target_dt, label = lunar_result
+        return target_dt, label
     base_time = (base_time or now_e8()).astimezone(EAST_EIGHT)
     weather_date = parse_weather_date(text, base_time)
     if weather_date and weather_date.value:
@@ -158,9 +401,9 @@ def resolve_calendar_target(
         }
         label = label_map.get(weather_date.kind)
         if weather_date.kind == "specific":
-            label = target.strftime("%m月%d日")
+            label = weather_date.phrase or target.strftime("%m月%d日")
         if not label:
-            label = _extract_date_phrase(text) or target.strftime("%Y年%m月%d日")
+            label = weather_date.phrase or _extract_date_phrase(text) or target.strftime("%Y年%m月%d日")
         return target, label
 
     parsed = dateparser.parse(
@@ -548,15 +791,18 @@ def extract_event(text: str) -> Optional[str]:
 def extract_person_name(text: str) -> Optional[str]:
     """通过常见句式提取人名，用于通话/健康等功能。"""
     patterns = [
-        r"给(?P<name>[\u4e00-\u9fa5A-Za-z0-9]{2,8})",
-        r"联系(?P<name>[\u4e00-\u9fa5A-Za-z0-9]{2,8})",
-        r"找(?P<name>[\u4e00-\u9fa5A-Za-z0-9]{2,8})",
-        r"(?P<name>[\u4e00-\u9fa5A-Za-z0-9]{2,8})医生",
-        r"(?P<name>[\u4e00-\u9fa5A-Za-z0-9]{2,8})大夫",
-        r"(?P<name>[\u4e00-\u9fa5A-Za-z0-9]{2,8})的",
+        re.compile(r"(?:帮我|请帮|麻烦|我想|我想要|我需要|想要|想)?给(?P<name>[\u4e00-\u9fa5A-Za-z0-9]{1,8})(?=(?:测|量|监测|检测|检查|检|测量|量血|测血|测体温|量体温))"),
+        re.compile(r"(?:帮我|请帮|麻烦|我想|我想要|我需要|想要|想)?给(?P<name>[\u4e00-\u9fa5A-Za-z0-9]{1,8})(?=(?:打|拨).{0,3}(?:电话|视频))"),
+        re.compile(r"(?:帮我|请帮|麻烦|我想|我想要|我需要|想要|想)?联系(?P<name>[\u4e00-\u9fa5A-Za-z0-9]{1,8})(?=(?:医生|大夫|老师|师傅)?(?:打电话|电话|视频)?$)"),
+        re.compile(r"找(?P<name>[\u4e00-\u9fa5A-Za-z0-9]{1,8})(?=(?:医生|大夫|老师|师傅)?$)"),
+        re.compile(r"(?P<name>[\u4e00-\u9fa5A-Za-z0-9]{1,8})(?:医生|大夫|老师|师傅)"),
+        re.compile(r"(?:查看|看看|了解|想看|想了解)?(?P<name>[\u4e00-\u9fa5A-Za-z0-9]{1,8})的?(?:健康画像|健康状况|健康情况|健康状态)"),
+        re.compile(r"给(?P<name>[\u4e00-\u9fa5A-Za-z0-9]{1,8})"),
+        re.compile(r"联系(?P<name>[\u4e00-\u9fa5A-Za-z0-9]{1,8})"),
+        re.compile(r"(?P<name>[\u4e00-\u9fa5A-Za-z0-9]{1,8})的"),
     ]
     for pattern in patterns:
-        match = re.search(pattern, text)
+        match = pattern.search(text)
         if match:
             candidate = match.group("name")
             sanitized = sanitize_person_name(candidate)

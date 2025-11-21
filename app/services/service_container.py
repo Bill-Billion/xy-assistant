@@ -77,4 +77,5 @@ def get_command_service() -> CommandService:
         settings=settings,
         weather_service=get_weather_service(),
         weather_broadcast_generator=get_weather_broadcast_generator(),
+        reply_llm_client=get_llm_client(),
     )

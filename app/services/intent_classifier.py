@@ -29,6 +29,14 @@ DEFAULT_SAFETY_NOTICE = (
     "小雅的建议仅供参考，不替代专业医疗意见，如症状持续或加重请及时咨询医生。"
 )
 
+WEATHER_INTENT_CODES = {
+    IntentCode.WEATHER_TODAY,
+    IntentCode.WEATHER_TOMORROW,
+    IntentCode.WEATHER_DAY_AFTER,
+    IntentCode.WEATHER_SPECIFIC,
+    IntentCode.WEATHER_OUT_OF_RANGE,
+}
+
 # 可直接执行的健康类意图（无需进一步澄清即可跳转前端功能）。
 ACTIONABLE_HEALTH_INTENTS = {
     IntentCode.HEALTH_MONITOR_GENERAL,
@@ -59,6 +67,17 @@ ACTIONABLE_INTENTS = ACTIONABLE_HEALTH_INTENTS | ACTIONABLE_CONTACT_INTENTS | {
     IntentCode.ALARM_CREATE,
     IntentCode.ALARM_REMINDER,
     IntentCode.ALARM_VIEW,
+    IntentCode.MEDICATION_REMINDER_VIEW,
+    IntentCode.MEDICATION_REMINDER_CREATE,
+    IntentCode.ENTERTAINMENT_MUSIC,
+    IntentCode.ENTERTAINMENT_OPERA,
+    IntentCode.ENTERTAINMENT_AUDIOBOOK,
+    IntentCode.ENTERTAINMENT_MUSIC_OFF,
+    IntentCode.ENTERTAINMENT_AUDIOBOOK_OFF,
+    IntentCode.ENTERTAINMENT_OPERA_OFF,
+    IntentCode.ENTERTAINMENT_RESUME,
+    IntentCode.JOKE_MODE,
+    IntentCode.ENTERTAINMENT_GENERAL,
 }
 
 # LLM 事件解析参数
@@ -311,6 +330,23 @@ class IntentClassifier:
                 hints.append(f"- 候选 target：{rule_result.target}")
             if getattr(rule_result, "weather_condition", None):
                 hints.append(f"- 关注天气要素：{rule_result.weather_condition}")
+        user_candidates = meta.get("user_candidates") if meta else None
+        if isinstance(user_candidates, str):
+            user_list = [item.strip() for item in user_candidates.split(",") if item.strip()]
+        elif isinstance(user_candidates, list):
+            user_list = [str(item).strip() for item in user_candidates if str(item).strip()]
+        else:
+            user_list = []
+        if user_list:
+            hints.append(f"- 当前候选用户：{', '.join(user_list)}")
+        context_meta = meta.get("context") if isinstance(meta, dict) else None
+        if isinstance(context_meta, dict):
+            local_weather = context_meta.get("local_weather")
+            if isinstance(local_weather, dict):
+                city = local_weather.get("city") or self._default_city
+                summary = local_weather.get("summary_short") or local_weather.get("summary")
+                if summary:
+                    hints.append(f"- 本地天气：{city} {summary}")
         if meta:
             hints.append(f"- 上下文信息：{json.dumps(meta, ensure_ascii=False)}")
         content = "\n".join(hints)
@@ -455,6 +491,29 @@ class IntentClassifier:
         weather_confidence = _to_float(weather_info.get("weather_confidence"))
         weather_evidence = weather_info.get("weather_evidence") or llm_parsed.get("weather_evidence")
 
+        location_name = (location_info.get("name") or "").strip()
+        numeral_tokens = {"一","二","三","四","五","六","七","八","九","十","零","〇"}
+        if not location_name or len(location_name) < 2 or any(char.isdigit() for char in location_name) or (
+            len(location_name) == 2 and location_name.endswith("市") and location_name[0] in numeral_tokens
+        ):
+            location_name = self._default_city
+            location_confidence = 0.5
+            location_info = {
+                "name": location_name,
+                "type": "city",
+                "confidence": location_confidence,
+                "source": "default",
+            }
+        elif not all("\u4e00" <= ch <= "\u9fff" or ch.isalpha() for ch in location_name):
+            location_name = self._default_city
+            location_confidence = 0.5
+            location_info = {
+                "name": location_name,
+                "type": "city",
+                "confidence": location_confidence,
+                "source": "default",
+            }
+
         raw_target_iso = datetime_info.get("iso") or ""
         target_iso = raw_target_iso.strip() if isinstance(raw_target_iso, str) else ""
         if target_iso:
@@ -463,8 +522,8 @@ class IntentClassifier:
             except ValueError:
                 target_iso = ""
 
-        weather_detail = {
-            "location": location_info.get("name", ""),
+        weather_detail: Optional[Dict[str, Any]] = {
+            "location": location_name,
             "location_type": location_info.get("type", ""),
             "location_confidence": location_confidence,
             "target_date": target_iso or None,
@@ -472,6 +531,8 @@ class IntentClassifier:
             "target_date_confidence": datetime_confidence,
             "needs_realtime_data": needs_realtime_data,
         }
+        if location_info.get("source") == "default":
+            weather_detail["location_source"] = "default"
 
         llm_result = llm_parsed.get("result")
         candidate_result = selected_candidate.get("result") if selected_candidate else None
@@ -695,6 +756,21 @@ class IntentClassifier:
         if intent_code in ACTIONABLE_INTENTS:
             advice = None
             safety_notice = None
+
+        if intent_code not in WEATHER_INTENT_CODES:
+            weather_summary = None
+            weather_condition = None
+            weather_confidence = None
+            weather_evidence = None
+            needs_realtime_data = False
+            weather_detail = None
+        else:
+            if weather_detail and not any(token in query for token in ["市", "县", "区", "省", "镇", "乡", "村", "州"]):
+                weather_detail["location"] = self._default_city
+                weather_detail["location_confidence"] = max(weather_detail.get("location_confidence") or 0.0, 0.5)
+                weather_detail["location_source"] = "default"
+                if weather_summary:
+                    weather_summary = weather_summary.replace(location_name, self._default_city)
 
         function_analysis = {
             "result": result,

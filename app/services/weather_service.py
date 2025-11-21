@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import math
 import re
+import asyncio
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from time import perf_counter
@@ -15,6 +17,7 @@ from dateparser import parse as dateparser_parse
 
 from app.services.weather_client import WeatherAPIError, WeatherClient, WeatherClientConfig
 from app.utils.time_utils import now_e8, parse_weather_date
+from app.utils.location_utils import normalize_city_name
 
 if TYPE_CHECKING:
     from app.services.llm_client import DoubaoClient
@@ -25,6 +28,35 @@ class GeoPoint:
     name: str
     latitude: float
     longitude: float
+
+
+# _PRESET_GEO_POINTS 列举常用城市的地理坐标，便于快速定位
+_PRESET_GEO_POINTS: Dict[str, GeoPoint] = {
+    "北京": GeoPoint("北京市", 39.9042, 116.4074),
+    "北京市": GeoPoint("北京市", 39.9042, 116.4074),
+    "上海": GeoPoint("上海市", 31.2304, 121.4737),
+    "上海市": GeoPoint("上海市", 31.2304, 121.4737),
+    "广州": GeoPoint("广州市", 23.1291, 113.2644),
+    "广州市": GeoPoint("广州市", 23.1291, 113.2644),
+    "深圳": GeoPoint("深圳市", 22.5431, 114.0579),
+    "深圳市": GeoPoint("深圳市", 22.5431, 114.0579),
+    "武汉": GeoPoint("武汉市", 30.5931, 114.3054),
+    "武汉市": GeoPoint("武汉市", 30.5931, 114.3054),
+    "杭州": GeoPoint("杭州市", 30.2741, 120.1551),
+    "杭州市": GeoPoint("杭州市", 30.2741, 120.1551),
+    "成都": GeoPoint("成都市", 30.5728, 104.0668),
+    "成都市": GeoPoint("成都市", 30.5728, 104.0668),
+    "南京": GeoPoint("南京市", 32.0603, 118.7969),
+    "南京市": GeoPoint("南京市", 32.0603, 118.7969),
+    "天津": GeoPoint("天津市", 39.3434, 117.3616),
+    "天津市": GeoPoint("天津市", 39.3434, 117.3616),
+    "西安": GeoPoint("西安市", 34.3416, 108.9398),
+    "西安市": GeoPoint("西安市", 34.3416, 108.9398),
+    "重庆": GeoPoint("重庆市", 29.5630, 106.5516),
+    "重庆市": GeoPoint("重庆市", 29.5630, 106.5516),
+    "长沙": GeoPoint("长沙市", 28.2278, 112.9389),
+    "长沙市": GeoPoint("长沙市", 28.2278, 112.9389),
+}
 
 
 @dataclass(slots=True)
@@ -449,6 +481,8 @@ class WeatherService:
             maxsize=256,
             ttl=settings.weather_geo_cache_ttl,
         )
+        self._throttle_lock = asyncio.Lock()
+        self._last_fetch_ts = 0.0
 
     @property
     def enabled(self) -> bool:
@@ -464,6 +498,8 @@ class WeatherService:
     ) -> Optional[WeatherContext]:
         if not llm_info:
             return None
+        if not isinstance(llm_info, dict):
+            llm_info = dict(llm_info)
 
         def _to_float(value: Any) -> Optional[float]:
             if value is None:
@@ -473,20 +509,38 @@ class WeatherService:
             except (TypeError, ValueError):
                 return None
 
-        location_name = str(llm_info.get("location") or "").strip()
-        if not location_name:
+        raw_location = str(llm_info.get("location") or "").strip()
+        if not raw_location:
             return None
 
         location_confidence = _to_float(llm_info.get("location_confidence"))
         if location_confidence is None:
             location_confidence = _to_float((llm_info.get("location_info") or {}).get("confidence"))
 
-        if location_confidence is not None and location_confidence >= self._llm_confidence_threshold:
-            location_source = "llm"
-        elif location_confidence is not None and location_confidence >= self._llm_low_confidence_threshold:
-            location_source = "llm_low"
+        normalized_name, normalize_reason = normalize_city_name(raw_location, self._default_point.name)
+        location_name = normalized_name
+
+        provided_source = llm_info.get("location_source")
+
+        if normalize_reason in {"empty", "numeric", "short"}:
+            location_source = "default"
+            location_confidence = 0.3
+            llm_info["location"] = location_name
+            llm_info["location_confidence"] = location_confidence
         else:
-            location_source = "llm_low" if location_confidence is not None else "llm"
+            if provided_source in {"query", "rule"}:
+                location_source = provided_source
+                location_confidence = max(location_confidence or 0.0, 0.85)
+            else:
+                if location_confidence is not None and location_confidence >= self._llm_confidence_threshold:
+                    location_source = "llm"
+                elif location_confidence is not None and location_confidence >= self._llm_low_confidence_threshold:
+                    location_source = "llm_low"
+                else:
+                    location_source = "llm_low" if location_confidence is not None else "llm"
+                if normalize_reason == "match" and (location_confidence or 0.0) < 0.8:
+                    location_confidence = 0.8
+        llm_info["location_source"] = location_source
 
         target_iso = str(llm_info.get("target_date") or "").strip()
         target_date = None
@@ -537,48 +591,62 @@ class WeatherService:
             )
 
         overall_start = perf_counter()
-        fetch_start = perf_counter()
-        try:
-            body = await self._client.get_forecast(
-                geo_point.latitude,
-                geo_point.longitude,
-                need_more_day=True,
-            )
-        except WeatherAPIError as exc:
-            logger.warning("weather fetch failed", error=str(exc))
-            return WeatherContext(
-                location=geo_point.name,
-                point=geo_point,
-                target_date=target_date,
-                daily=[],
-                current={},
-                derived_flags={"error": str(exc)},
-                location_source=location_source,
-                target_date_source=target_date_source,
-                llm_metadata={**base_metadata, "api_failed": True},
-            )
-        except httpx.HTTPError as exc:
-            logger.warning("weather http error", error=str(exc))
-            return WeatherContext(
-                location=geo_point.name,
-                point=geo_point,
-                target_date=target_date,
-                daily=[],
-                current={},
-                derived_flags={"error": str(exc)},
-                location_source=location_source,
-                target_date_source=target_date_source,
-                llm_metadata={**base_metadata, "api_failed": True},
-            )
+        body: Optional[Dict[str, Any]] = None
+        attempts = 2 if needs_realtime else 1
+        for attempt in range(attempts):
+            fetch_start = perf_counter()
+            try:
+                if not self._client:
+                    return None
+                if needs_realtime:
+                    async with self._throttle_lock:
+                        now_ts = time.monotonic()
+                        wait_time = 1.0 - (now_ts - self._last_fetch_ts)
+                        if wait_time > 0:
+                            await asyncio.sleep(wait_time)
+                        self._last_fetch_ts = time.monotonic()
+                        body = await self._client.get_forecast(
+                            geo_point.latitude,
+                            geo_point.longitude,
+                            need_more_day=True,
+                        )
+                else:
+                    body = await self._client.get_forecast(
+                        geo_point.latitude,
+                        geo_point.longitude,
+                        need_more_day=True,
+                    )
+                logger.debug(
+                    "timing weather_service",
+                    step="weather_api",
+                    duration=round(perf_counter() - fetch_start, 3),
+                    location=geo_point.name,
+                )
+                break
+            except WeatherAPIError as exc:
+                logger.warning(
+                    "weather fetch failed",
+                    error=str(exc),
+                    attempt=attempt + 1,
+                )
+                if attempt + 1 >= attempts:
+                    return None
+                await asyncio.sleep(0.8)
+            except httpx.HTTPError as exc:
+                logger.warning(
+                    "weather http error",
+                    error=str(exc),
+                    attempt=attempt + 1,
+                )
+                if attempt + 1 >= attempts:
+                    return None
+                await asyncio.sleep(0.8)
+
+        if not body:
+            return None
 
         daily_items = _parse_daily(body)
         current = body.get("now") or {}
-        logger.debug(
-            "timing weather_service",
-            step="weather_api",
-            duration=round(perf_counter() - fetch_start, 3),
-            location=geo_point.name,
-        )
 
         derived_flags = _derive_flags(geo_point.name, target_date, daily_items, current)
         context = WeatherContext(
@@ -773,12 +841,22 @@ class WeatherService:
     async def _resolve_point(self, location: Optional[str]) -> GeoPoint:
         if not location:
             return self._default_point
+        normalized = location.strip()
+        if normalized in _PRESET_GEO_POINTS:
+            return _PRESET_GEO_POINTS[normalized]
+        if normalized.endswith("市"):
+            base = normalized[:-1]
+            if base in _PRESET_GEO_POINTS:
+                return _PRESET_GEO_POINTS[base]
         if location in self._geo_cache:
             return self._geo_cache[location]
         point = await self._geocode(location)
         if not point:
             return self._default_point
         self._geo_cache[location] = point
+        normalized = location.strip()
+        if normalized != location:
+            self._geo_cache[normalized] = point
         return point
 
     async def _geocode(self, location: str) -> Optional[GeoPoint]:

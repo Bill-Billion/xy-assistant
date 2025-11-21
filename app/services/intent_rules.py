@@ -161,6 +161,216 @@ _health_context_terms = {
     "心理",
     "康复训练",
 }
+
+_medication_keywords = [
+    "用药",
+    "服药",
+    "吃药",
+    "药物",
+]
+
+_medication_view_terms = [
+    "用药提醒",
+    "用药安排",
+    "用药计划",
+    "服药提醒",
+    "服药计划",
+    "吃药提醒",
+    "吃药计划",
+    "药物提醒",
+]
+
+_medication_view_verbs = [
+    "打开",
+    "查看",
+    "看看",
+    "看下",
+    "看一下",
+    "看一看",
+    "有没有",
+    "有吗",
+    "查询",
+    "了解",
+    "在哪",
+    "哪里",
+    "怎么",
+    "如何",
+    "怎样",
+    "哪些",
+]
+
+_medication_create_triggers = [
+    "新增",
+    "新建",
+    "添加",
+    "安排",
+    "设定",
+    "设个",
+    "设一下",
+    "设一个",
+    "定个",
+    "定一个",
+    "订个",
+    "订一个",
+    "帮我定",
+    "帮我设",
+    "设置",
+    "设",
+]
+
+_health_profile_keywords = [
+    "健康状况",
+    "健康情况",
+    "健康状态",
+    "身体状况",
+    "身体情况",
+    "身体状态",
+    "健康档案",
+    "健康信息",
+]
+
+_topic_suffix_cleanup = [
+    "判断方法",
+    "判断",
+    "方法",
+    "怎么办",
+    "怎么做",
+    "怎么判断",
+    "如何判断",
+    "有哪些症状",
+    "症状有哪些",
+    "症状",
+    "征兆",
+    "表现",
+    "要注意什么",
+    "需要注意什么",
+]
+
+_entertainment_pause_map = {
+    "音乐": IntentCode.ENTERTAINMENT_MUSIC_OFF,
+    "歌": IntentCode.ENTERTAINMENT_MUSIC_OFF,
+    "听书": IntentCode.ENTERTAINMENT_AUDIOBOOK_OFF,
+    "小说": IntentCode.ENTERTAINMENT_AUDIOBOOK_OFF,
+    "戏曲": IntentCode.ENTERTAINMENT_OPERA_OFF,
+    "曲艺": IntentCode.ENTERTAINMENT_OPERA_OFF,
+}
+
+_entertainment_resume_keywords = [
+    "继续播放",
+    "继续听",
+    "接着播",
+    "恢复播放",
+    "继续放",
+]
+
+_settings_general_keywords = {
+    "小雅设置",
+    "设置界面",
+    "设置页面",
+    "设置中心",
+    "设置菜单",
+    "设置功能",
+    "设置选项",
+    "系统设置",
+    "设备设置",
+    "打开设置",
+    "进入设置",
+    "去设置",
+}
+
+_settings_general_exact = {
+    "设置",
+    "设置一下",
+    "设置下",
+    "设置一下下",
+}
+
+_settings_exclusion_keywords = {
+    "提醒",
+    "闹钟",
+    "天气",
+    "气温",
+    "农历",
+    "黄历",
+    "日期",
+    "时间",
+    "几点",
+    "学习",
+    "学",
+    "课程",
+    "家政",
+    "维修",
+    "服务",
+    "预约",
+    "师傅",
+    "娱乐",
+    "音乐",
+    "听书",
+    "戏曲",
+    "曲艺",
+    "游戏",
+    "斗地主",
+    "象棋",
+    "笑话",
+    "聊天",
+    "通话",
+    "打电话",
+    "视频",
+    "相册",
+    "照片",
+    "商城",
+    "购买",
+    "下单",
+    "商品",
+    "订单",
+    "机器人",
+    "终端",
+    "用品",
+    "医生",
+    "问诊",
+    "咨询",
+    "家庭医生",
+    "名医",
+    "医生",
+    "健康",
+    "血压",
+    "血氧",
+    "心率",
+    "血糖",
+    "血脂",
+    "体重",
+    "体温",
+    "血红蛋白",
+    "尿酸",
+    "睡眠",
+    "评估",
+    "测量",
+    "监测",
+    "科普",
+    "画像",
+    "用药",
+    "服药",
+    "吃药",
+    "药物",
+}
+_settings_exclusion_keywords.update(_medication_view_terms)
+_settings_exclusion_keywords.update(_health_evaluation_keywords)
+_settings_exclusion_keywords.update(_health_profile_keywords)
+_settings_exclusion_keywords.update(_health_context_terms)
+_settings_exclusion_keywords.update(_health_metric_map.keys())
+
+_joke_keywords = [
+    "讲个笑话",
+    "讲笑话",
+    "来个笑话",
+    "讲段子",
+    "逗我笑",
+    "讲个搞笑的",
+]
+
+_profile_name_pattern = re.compile(
+    r"(?:我想)?(?:了解|看看|查看|查询|知道|想看|想了解|想知道)?(?P<name>[\u4e00-\u9fa5A-Za-z0-9]{1,8})的?(?:健康状况|健康情况|健康状态|身体状况|身体情况|身体状态|健康档案)"
+)
 _health_context_terms.update(_health_metric_map.keys())
 
 _knowledge_action_map = {
@@ -291,19 +501,65 @@ def apply_weather_rule(context: RuleContext) -> Optional[RuleResult]:
 
     date_kind, date_value = parsed.kind, parsed.value
     if date_kind == "today":
-        return RuleResult(IntentCode.WEATHER_TODAY, "今天天气", target="今天", weather_condition=weather_condition)
+        today_iso = context.base_time.date().isoformat()
+        return RuleResult(
+            IntentCode.WEATHER_TODAY,
+            "今天天气",
+            target="今天",
+            weather_condition=weather_condition,
+            parsed_time=today_iso,
+            time_text="今天",
+            time_confidence=0.99,
+            time_source="rule",
+        )
     if date_kind == "tomorrow":
-        return RuleResult(IntentCode.WEATHER_TOMORROW, "明天天气", target="明天", weather_condition=weather_condition)
+        target_time = context.base_time + timedelta(days=1)
+        target_iso = target_time.date().isoformat()
+        return RuleResult(
+            IntentCode.WEATHER_TOMORROW,
+            "明天天气",
+            target="明天",
+            weather_condition=weather_condition,
+            parsed_time=target_iso,
+            time_text="明天",
+            time_confidence=0.99,
+            time_source="rule",
+        )
     if date_kind == "day_after":
-        return RuleResult(IntentCode.WEATHER_DAY_AFTER, "后天天气", target="后天", weather_condition=weather_condition)
+        target_time = context.base_time + timedelta(days=2)
+        target_iso = target_time.date().isoformat()
+        return RuleResult(
+            IntentCode.WEATHER_DAY_AFTER,
+            "后天天气",
+            target="后天",
+            weather_condition=weather_condition,
+            parsed_time=target_iso,
+            time_text="后天",
+            time_confidence=0.98,
+            time_source="rule",
+        )
     if date_kind == "specific":
+        time_phrase = parsed.phrase or date_value.strftime("%Y-%m-%d")
         if not is_within_days(date_value, context.base_time, 15):
-            return RuleResult(IntentCode.WEATHER_OUT_OF_RANGE, "我还只能查到15天内的天气哦", target="", weather_condition=weather_condition)
+            return RuleResult(
+                IntentCode.WEATHER_OUT_OF_RANGE,
+                "我还只能查到15天内的天气哦",
+                target="",
+                weather_condition=weather_condition,
+                parsed_time=date_value.isoformat(),
+                time_text=time_phrase,
+                time_confidence=0.9,
+                time_source="rule",
+            )
         return RuleResult(
             IntentCode.WEATHER_SPECIFIC,
-            f"{date_value.strftime('%m%d')}天气",
-            target=date_value.strftime("%m%d"),
+            "特定日期天气",
+            target=date_value.date().isoformat(),
             weather_condition=weather_condition,
+            parsed_time=date_value.isoformat(),
+            time_text=time_phrase,
+            time_confidence=0.9,
+            time_source="rule",
         )
     return None
 
@@ -333,6 +589,9 @@ def apply_calendar_rule(context: RuleContext) -> Optional[RuleResult]:
 
 def apply_time_rule(context: RuleContext) -> Optional[RuleResult]:
     """时间播报与闹钟提醒解析。"""
+    q = context.query
+    if any(keyword in q for keyword in _medication_keywords):
+        return None
     week_tokens = ["下周", "下星期", "下礼拜", "这周", "本周", "周一", "周二", "周三", "周四", "周五", "周六", "周日", "周天"]
     has_week_token = any(token in context.query for token in week_tokens)
     if "几点" in context.query or "现在时间" in context.query:
@@ -359,20 +618,29 @@ def apply_time_rule(context: RuleContext) -> Optional[RuleResult]:
 def apply_settings_rule(context: RuleContext) -> Optional[RuleResult]:
     """系统设置相关指令（声音/亮度/息屏等）。"""
     q = context.query
-    if "设置" in q:
-        return RuleResult(IntentCode.SETTINGS_GENERAL, "小雅设置")
     if any(term in q for term in ["关机", "关闭屏幕", "息屏", "屏幕关闭", "关闭显示"]):
         return RuleResult(IntentCode.DEVICE_SCREEN_OFF, "息屏", confidence=0.95)
-    if "声音" in q:
-        if "低" in q or "小" in q or "减" in q:
+    if "声音" in q or "音量" in q:
+        if any(token in q for token in ["低", "小", "减", "静音"]):
             return RuleResult(IntentCode.SETTINGS_SOUND_DOWN, "声音调低")
-        if "高" in q or "大" in q or "增" in q:
+        if any(token in q for token in ["高", "大", "增", "加", "最大", "提高"]):
             return RuleResult(IntentCode.SETTINGS_SOUND_UP, "声音调高")
     if "亮度" in q:
         if any(token in q for token in ["低", "暗", "减"]):
             return RuleResult(IntentCode.SETTINGS_BRIGHTNESS_DOWN, "亮度调低")
         if any(token in q for token in ["高", "亮", "增"]):
             return RuleResult(IntentCode.SETTINGS_BRIGHTNESS_UP, "亮度调高")
+    general_trigger = False
+    stripped = q.strip()
+    if any(keyword in q for keyword in _settings_general_keywords):
+        general_trigger = True
+    elif stripped in _settings_general_exact:
+        general_trigger = True
+    elif "设置" in q:
+        if not any(exclusion in q for exclusion in _settings_exclusion_keywords):
+            general_trigger = True
+    if general_trigger:
+        return RuleResult(IntentCode.SETTINGS_GENERAL, "小雅设置")
     return None
 
 
@@ -394,6 +662,10 @@ def _normalize_topic(raw_topic: str, action: str | None) -> str:
                 continue
             topic = topic[: -len(phrase)].rstrip()
     topic = topic.strip()
+    for suffix in _topic_suffix_cleanup:
+        if topic.endswith(suffix):
+            topic = topic[: -len(suffix)].rstrip()
+    topic = topic.strip()
     if action:
         action_clean = _knowledge_action_map.get(action, action)
         if topic:
@@ -405,6 +677,8 @@ def _normalize_topic(raw_topic: str, action: str | None) -> str:
 def _extract_health_knowledge_topic(query: str) -> Optional[str]:
     """识别“讲讲/怎么判断/怎么办”等健康知识类问题，返回归一化主题。"""
     text = query.strip()
+    if extract_person_name(text) and any(term in text for term in _health_profile_keywords):
+        return None
     for pattern, action in _knowledge_prefix_patterns:
         match = pattern.match(text)
         if not match:
@@ -428,42 +702,85 @@ def _extract_health_knowledge_topic(query: str) -> Optional[str]:
 def apply_health_rules(context: RuleContext) -> Optional[RuleResult]:
     """健康领域指令匹配，覆盖监测、评估、医生咨询等。"""
     q = context.query
+    person = extract_person_name(q)
+    time_expr = extract_time_expression(q, context.base_time)
+    has_medication_keyword = any(keyword in q for keyword in _medication_keywords)
+    has_view_term = any(term in q for term in _medication_view_terms)
+    has_view_verb = any(term in q for term in _medication_view_verbs)
+    has_create_trigger = any(term in q for term in _medication_create_triggers)
+
+    if has_view_term or ("提醒" in q and has_medication_keyword):
+        if time_expr is not None or (has_create_trigger and not has_view_verb):
+            medicine = extract_medicine(q)
+            target_iso, event, status = derive_alarm_target(q, context.base_time, time_expr)
+            time_text = time_expr.raw_text if time_expr and time_expr.raw_text else None
+            return RuleResult(
+                IntentCode.MEDICATION_REMINDER_CREATE,
+                "新建用药提醒",
+                target=medicine or "",
+                event=event or (medicine or None),
+                status=status,
+                confidence=0.95,
+                parsed_time=target_iso or None,
+                time_text=time_text,
+                time_confidence=0.9 if target_iso else None,
+                time_source="rule" if target_iso else None,
+            )
+        return RuleResult(IntentCode.MEDICATION_REMINDER_VIEW, "用药提醒", target=person or "", confidence=0.95)
+
+    profile_match = _profile_name_pattern.search(q)
+    if profile_match:
+        person = profile_match.group("name")
+
+    if person and any(term in q for term in _health_profile_keywords):
+        person = person.replace("了解", "").strip()
+        for keyword in _health_profile_keywords:
+            if keyword in person:
+                person = person.replace(keyword, "").strip()
+        person = person.strip("的 ")
+        return RuleResult(IntentCode.HEALTH_PROFILE, "健康画像", target=person, confidence=0.95)
+
     knowledge_topic = _extract_health_knowledge_topic(q)
     if knowledge_topic:
         return RuleResult(IntentCode.HEALTH_EDUCATION, "健康科普", target=knowledge_topic, confidence=0.9)
+
     if any(keyword in q for keyword in _health_evaluation_keywords) or (
         "评估" in q and any(term in q for term in _health_evaluation_support_terms)
     ):
         if not any(metric in q for metric in _health_metric_map.keys()):
-            person = extract_person_name(q)
             return RuleResult(IntentCode.HEALTH_EVALUATION, "健康评估", target=person or "", confidence=0.95)
+
     if "健康监测" in q or "健康检测" in q:
         return RuleResult(IntentCode.HEALTH_MONITOR_GENERAL, "健康监测")
+
     for metric, (intent_code, result_text) in _health_metric_map.items():
         if metric in q:
-            person = extract_person_name(q)
             return RuleResult(intent_code, result_text, target=person or "", confidence=0.95)
+
     if "健康评估" in q:
-        person = extract_person_name(q)
         return RuleResult(IntentCode.HEALTH_EVALUATION, "健康评估", target=person or "")
+
     if "健康科普" in q or "科普" in q:
         return RuleResult(IntentCode.HEALTH_EDUCATION, "健康科普")
+
     if "健康画像" in q:
-        person = extract_person_name(q)
-        return RuleResult(IntentCode.HEALTH_PROFILE, "健康画像", target=person or "")
+        sanitized_person = person or ""
+        if sanitized_person:
+            sanitized_person = sanitized_person.replace("了解", "").strip("的 ")
+        return RuleResult(IntentCode.HEALTH_PROFILE, "健康画像", target=sanitized_person)
+
     if "小雅医生" in q or "健康咨询" in q:
-        person = extract_person_name(q)
         if person:
             return RuleResult(IntentCode.HEALTH_DOCTOR_SPECIFIC, "小雅医生", target=person)
         return RuleResult(IntentCode.HEALTH_DOCTOR_GENERAL, "小雅医生")
+
     if "名医问诊" in q or "远程问诊" in q:
         return RuleResult(IntentCode.HEALTH_SPECIALIST, "名医问诊")
-    if "用药提醒" in q or "服药计划" in q:
-        person = extract_person_name(q)
-        return RuleResult(IntentCode.MEDICATION_REMINDER_VIEW, "用药提醒", target=person or "")
+
     if "新增" in q and ("用药" in q or "服药" in q):
         medicine = extract_medicine(q)
         return RuleResult(IntentCode.MEDICATION_REMINDER_CREATE, "新建用药提醒", target=medicine or "")
+
     return None
 
 
@@ -565,12 +882,31 @@ def apply_education_rule(context: RuleContext) -> Optional[RuleResult]:
 
 def apply_entertainment_rule(context: RuleContext) -> Optional[RuleResult]:
     q = context.query
-    if any(term in q for term in ["关闭音乐", "关掉音乐", "停音乐", "停止音乐"]):
-        return RuleResult(IntentCode.ENTERTAINMENT_MUSIC_OFF, "关闭音乐", confidence=0.95)
-    if any(term in q for term in ["关闭听书", "关闭听小说", "停听书", "停止听书", "听书关闭"]):
-        return RuleResult(IntentCode.ENTERTAINMENT_AUDIOBOOK_OFF, "关闭听书", confidence=0.95)
-    if any(term in q for term in ["关闭戏曲", "关闭曲艺", "停戏曲", "停止戏曲"]):
-        return RuleResult(IntentCode.ENTERTAINMENT_OPERA_OFF, "关闭戏曲", confidence=0.95)
+    if any(keyword in q for keyword in _joke_keywords):
+        return RuleResult(IntentCode.JOKE_MODE, "笑话模式", confidence=0.9)
+
+    pause_triggers = ["暂停", "停止", "别放", "关掉", "停一下", "先别播", "关闭"]
+    if any(trigger in q for trigger in pause_triggers):
+        for term, intent in _entertainment_pause_map.items():
+            if term in q:
+                result_map = {
+                    IntentCode.ENTERTAINMENT_MUSIC_OFF: "关闭音乐",
+                    IntentCode.ENTERTAINMENT_AUDIOBOOK_OFF: "关闭听书",
+                    IntentCode.ENTERTAINMENT_OPERA_OFF: "关闭戏曲",
+                }
+                return RuleResult(intent, result_map[intent], confidence=0.95)
+        return RuleResult(IntentCode.ENTERTAINMENT_MUSIC_OFF, "关闭音乐", confidence=0.9)
+
+    if any(keyword in q for keyword in _entertainment_resume_keywords):
+        target = ""
+        if any(term in q for term in ["戏曲", "曲艺"]):
+            target = "戏曲"
+        elif any(term in q for term in ["听书", "小说"]):
+            target = "听书"
+        elif "音乐" in q or "歌曲" in q:
+            target = "音乐"
+        return RuleResult(IntentCode.ENTERTAINMENT_RESUME, "继续播放", target=target)
+
     if any(term in q for term in ["娱乐", "玩", "游戏"]):
         if "斗地主" in q:
             return RuleResult(IntentCode.GAME_DOU_DI_ZHU, "斗地主")
