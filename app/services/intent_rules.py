@@ -218,6 +218,20 @@ _medication_create_triggers = [
     "设",
 ]
 
+# 聊天严格关键词，仅当出现这些词才允许直接触发聊天意图
+_chat_strict_keywords = {
+    "聊天",
+    "聊聊",
+    "聊会儿",
+    "聊一会",
+    "陪我聊",
+    "陪我聊聊",
+    "陪我说说话",
+    "说说话",
+    "唠嗑",
+    "唠会儿",
+}
+
 _health_profile_keywords = [
     "健康状况",
     "健康情况",
@@ -262,6 +276,19 @@ _entertainment_resume_keywords = [
     "恢复播放",
     "继续放",
 ]
+
+_chat_strict_keywords = {
+    "聊天",
+    "聊聊",
+    "聊会儿",
+    "聊一会",
+    "陪我聊",
+    "陪我聊聊",
+    "陪我说说话",
+    "说说话",
+    "唠嗑",
+    "唠会儿",
+}
 
 _settings_general_keywords = {
     "小雅设置",
@@ -590,7 +617,7 @@ def apply_calendar_rule(context: RuleContext) -> Optional[RuleResult]:
 def apply_time_rule(context: RuleContext) -> Optional[RuleResult]:
     """时间播报与闹钟提醒解析。"""
     q = context.query
-    if any(keyword in q for keyword in _medication_keywords):
+    if any(keyword in q for keyword in _medication_keywords) or "用药提醒" in q or "服药提醒" in q or "吃药提醒" in q:
         return None
     week_tokens = ["下周", "下星期", "下礼拜", "这周", "本周", "周一", "周二", "周三", "周四", "周五", "周六", "周日", "周天"]
     has_week_token = any(token in context.query for token in week_tokens)
@@ -618,6 +645,10 @@ def apply_time_rule(context: RuleContext) -> Optional[RuleResult]:
 def apply_settings_rule(context: RuleContext) -> Optional[RuleResult]:
     """系统设置相关指令（声音/亮度/息屏等）。"""
     q = context.query
+    # 排除领域关键词，防止拦截其他功能
+    exclusion_tokens = _settings_exclusion_keywords | _medication_keywords | set(_medication_view_terms) | set(_medication_create_triggers)
+    if any(token in q for token in exclusion_tokens):
+        return None
     if any(term in q for term in ["关机", "关闭屏幕", "息屏", "屏幕关闭", "关闭显示"]):
         return RuleResult(IntentCode.DEVICE_SCREEN_OFF, "息屏", confidence=0.95)
     if "声音" in q or "音量" in q:
@@ -777,10 +808,6 @@ def apply_health_rules(context: RuleContext) -> Optional[RuleResult]:
     if "名医问诊" in q or "远程问诊" in q:
         return RuleResult(IntentCode.HEALTH_SPECIALIST, "名医问诊")
 
-    if "新增" in q and ("用药" in q or "服药" in q):
-        medicine = extract_medicine(q)
-        return RuleResult(IntentCode.MEDICATION_REMINDER_CREATE, "新建用药提醒", target=medicine or "")
-
     return None
 
 
@@ -925,8 +952,8 @@ def apply_entertainment_rule(context: RuleContext) -> Optional[RuleResult]:
         return RuleResult(IntentCode.ENTERTAINMENT_MUSIC, "小雅音乐")
     if "听书" in q or "听小说" in q:
         return RuleResult(IntentCode.ENTERTAINMENT_AUDIOBOOK, "小雅听书")
-    if any(term in q for term in ["聊天", "陪我聊", "聊聊"]):
-        return RuleResult(IntentCode.CHAT, "语音陪伴或聊天")
+    if any(term in q for term in _chat_strict_keywords):
+        return RuleResult(IntentCode.CHAT, "语音陪伴或聊天", confidence=0.96)
     return None
 
 

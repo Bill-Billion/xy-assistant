@@ -185,6 +185,19 @@ RESULTS_REQUIRING_USER = {
     "健康画像",
 }
 
+CHAT_KEYWORDS = {
+    "聊天",
+    "聊聊",
+    "聊会儿",
+    "聊一会",
+    "陪我聊",
+    "陪我聊聊",
+    "陪我说说话",
+    "说说话",
+    "唠嗑",
+    "唠会儿",
+}
+
 
 @dataclass
 class ClassificationResult:
@@ -549,6 +562,24 @@ class IntentClassifier:
             result = definition.result
         else:
             result = llm_result or ""
+
+        def _contains_chat_keyword(text: str) -> bool:
+            return any(token in (text or "") for token in CHAT_KEYWORDS)
+
+        if (intent_code == IntentCode.CHAT or result == "语音陪伴或聊天") and not _contains_chat_keyword(query):
+            intent_code = IntentCode.UNKNOWN
+            result = "未知指令"
+            function_analysis = {
+                "result": result,
+                "target": "",
+                "event": None,
+                "status": None,
+                "confidence": 0.0,
+                "need_clarify": True,
+                "clarify_message": "我可以陪您聊天，也可以帮您处理天气、用药提醒、健康监测、家政等需求，请再具体说说您的想法？",
+                "reasoning": "缺少明确聊天关键词，需澄清意图。",
+            }
+            return function_analysis, intent_code, {}
 
         candidate_parsed_time = None
         candidate_time_text = ""
