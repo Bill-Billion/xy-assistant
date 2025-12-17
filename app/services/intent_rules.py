@@ -243,6 +243,17 @@ _health_profile_keywords = [
     "健康信息",
 ]
 
+# 健康操/养生操关键词，优先归入健康科普
+_health_exercise_keywords = [
+    "八段锦",
+    "养生操",
+    "健身操",
+    "广播体操",
+    "康复操",
+    "气功",
+    "舒缓操",
+]
+
 _topic_suffix_cleanup = [
     "判断方法",
     "判断",
@@ -646,7 +657,12 @@ def apply_settings_rule(context: RuleContext) -> Optional[RuleResult]:
     """系统设置相关指令（声音/亮度/息屏等）。"""
     q = context.query
     # 排除领域关键词，防止拦截其他功能
-    exclusion_tokens = _settings_exclusion_keywords | _medication_keywords | set(_medication_view_terms) | set(_medication_create_triggers)
+    exclusion_tokens = (
+        set(_settings_exclusion_keywords)
+        | set(_medication_keywords)
+        | set(_medication_view_terms)
+        | set(_medication_create_triggers)
+    )
     if any(token in q for token in exclusion_tokens):
         return None
     if any(term in q for term in ["关机", "关闭屏幕", "息屏", "屏幕关闭", "关闭显示"]):
@@ -900,6 +916,14 @@ def apply_home_service_rule(context: RuleContext) -> Optional[RuleResult]:
 
 
 def apply_education_rule(context: RuleContext) -> Optional[RuleResult]:
+    # 养生/健康操类内容归入教育/科普
+    if any(term in context.query for term in _health_exercise_keywords):
+        subject = extract_subject(context.query) or next(
+            (term for term in _health_exercise_keywords if term in context.query),
+            "",
+        )
+        return RuleResult(IntentCode.HEALTH_EDUCATION, "健康科普", target=subject, confidence=0.92)
+
     if ("学习" in context.query or "课程" in context.query or "教学" in context.query or
             re.search(r"(想|要|帮我).{0,2}学[\u4e00-\u9fa5A-Za-z0-9]{1,}", context.query)):
         subject = extract_subject(context.query)
@@ -909,6 +933,33 @@ def apply_education_rule(context: RuleContext) -> Optional[RuleResult]:
 
 def apply_entertainment_rule(context: RuleContext) -> Optional[RuleResult]:
     q = context.query
+    prev_keywords = [
+        "上一首",
+        "上一曲",
+        "上一个",
+        "上一段",
+        "上首",
+        "上首歌",
+        "上一首歌",
+        "往前一首",
+        "上一节",
+    ]
+    next_keywords = [
+        "下一首",
+        "下一曲",
+        "下一个",
+        "下一段",
+        "下首",
+        "下首歌",
+        "下一首歌",
+        "往后一首",
+        "下一节",
+    ]
+    if any(term in q for term in prev_keywords):
+        return RuleResult(IntentCode.ENTERTAINMENT_PREV_TRACK, "上一首")
+    if any(term in q for term in next_keywords):
+        return RuleResult(IntentCode.ENTERTAINMENT_NEXT_TRACK, "下一首")
+
     if any(keyword in q for keyword in _joke_keywords):
         return RuleResult(IntentCode.JOKE_MODE, "笑话模式", confidence=0.9)
 

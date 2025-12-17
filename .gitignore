@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+
+# 本地/工具生成的回归结果
+order_fuzzy_results.csv
+
+# 打包产物（镜像 tar）
+*.tar
+
+# Serena 本地索引
+.serena/
+
+# 临时文件
+.tmp-*

@@ -443,6 +443,7 @@ class TimeExpression:
     raw_text: Optional[str] = None
     date_value: Optional[datetime] = None
     is_date_only: bool = False
+    source: Optional[str] = None  # pattern | relative | periodic | date | dateparser
 
 
 _relative_pattern = re.compile(
@@ -625,6 +626,24 @@ def extract_time_expression(text: str, base_time: Optional[datetime] = None) -> 
     """抽取文本中的时间表达（绝对时间 / 相对时间 / 周期描述）。"""
     base_time = base_time or now_e8()
     original = text.strip()
+    # 先对原始文本尝试绝对时间匹配，避免清洗后丢失关键信息（如“下午2点10分”）
+    direct_match = _time_pattern.search(original)
+    if direct_match:
+        expr = TimeExpression(raw_text=direct_match.group(0), source="pattern_raw")
+        meridiem = direct_match.group(1) or ""
+        hour = int(direct_match.group(2))
+        minute = int(direct_match.group(4) or 0)
+        resolved_hour = resolve_hour(hour, meridiem, base_time)
+        candidate = base_time.replace(
+            hour=resolved_hour,
+            minute=minute,
+            second=0,
+            microsecond=0,
+        )
+        expr.datetime_value = candidate
+        expr.is_date_only = False
+        return expr
+
     cleaned_no_date = re.sub(_date_pattern, "", original)
     cleaned_no_date = re.sub(r"\d{1,2}月\d{1,2}(?:日|号)?", "", cleaned_no_date)
     cleaned = _normalize_time_phrases(cleaned_no_date)
@@ -663,6 +682,20 @@ def extract_time_expression(text: str, base_time: Optional[datetime] = None) -> 
         expr.periodic_status = _periodic_map.get(periodic_text, periodic_text)
         expr.raw_text = periodic_text
 
+    # 处理“点半/点一刻/点三刻”等口语时间（支持中文数字）
+    half_match = re.search(r"(?:(上午|下午|早上|晚上|中午))?([零〇一二三四五六七八九十两兩\\d]{1,3})点(半|一刻|三刻)", cleaned)
+    if half_match:
+        meridiem = half_match.group(1) or ""
+        hour_raw = half_match.group(2)
+        minute_token = half_match.group(3)
+        hour_val = _parse_chinese_number(hour_raw) or 0
+        minutes = 30 if minute_token == "半" else (15 if minute_token == "一刻" else 45)
+        resolved_hour = resolve_hour(int(hour_val), meridiem, base_time)
+        candidate = base_time.replace(hour=resolved_hour, minute=minutes, second=0, microsecond=0)
+        expr.datetime_value = candidate
+        expr.raw_text = expr.raw_text or half_match.group(0)
+        expr.is_date_only = False
+
     time_match = _time_pattern.search(cleaned)
     if time_match:
         meridiem = time_match.group(1) or ""
@@ -672,17 +705,23 @@ def extract_time_expression(text: str, base_time: Optional[datetime] = None) -> 
         if expr.date_value:
             candidate = expr.date_value.replace(hour=resolved_hour, minute=minute, second=0, microsecond=0)
         else:
-            candidate = base_time.replace(hour=resolved_hour, minute=minute, second=0, microsecond=0)
-            if candidate <= base_time:
-                candidate += timedelta(days=1)
+            candidate = base_time.replace(
+                hour=resolved_hour,
+                minute=minute,
+                second=0,
+                microsecond=0,
+            )
         expr.datetime_value = candidate
         expr.raw_text = expr.raw_text or time_match.group(0)
         expr.is_date_only = False
+        expr.source = "pattern"
+        return expr
 
     if expr.date_value and expr.datetime_value is None:
         candidate = expr.date_value.replace(hour=9, minute=0, second=0, microsecond=0)
         expr.datetime_value = candidate
         expr.is_date_only = True
+        expr.source = expr.source or "date"
 
     if not any([expr.relative_delta, expr.datetime_value, expr.periodic_status]):
         parsed = dateparser.parse(
@@ -701,6 +740,7 @@ def extract_time_expression(text: str, base_time: Optional[datetime] = None) -> 
             expr.datetime_value = parsed
             expr.raw_text = cleaned
             expr.is_date_only = False
+            expr.source = "dateparser"
 
     if any([expr.relative_delta, expr.datetime_value, expr.periodic_status]):
         return expr
@@ -752,8 +792,6 @@ def derive_alarm_target(
         alarm_dt = base_time + time_expr.relative_delta
     elif time_expr.datetime_value:
         alarm_dt = time_expr.datetime_value
-        if not time_expr.is_date_only and alarm_dt <= base_time:
-            alarm_dt += timedelta(days=1)
 
     if alarm_dt:
         if not alarm_dt.tzinfo:

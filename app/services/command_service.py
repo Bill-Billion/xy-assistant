@@ -604,6 +604,19 @@ class CommandService:
         default_city = self._settings.weather_default_city
         if not meta_payload:
             return default_city
+        # 优先使用显式 city 字段
+        city_field = meta_payload.get("city")
+        if isinstance(city_field, str) and city_field.strip():
+            normalized, _ = normalize_city_name(city_field.strip(), default_city)
+            if normalized:
+                return normalized
+        if isinstance(city_field, dict):
+            for key in ("city", "name", "display", "text"):
+                value = city_field.get(key)
+                if isinstance(value, str) and value.strip():
+                    normalized, _ = normalize_city_name(value.strip(), default_city)
+                    if normalized:
+                        return normalized
         location = meta_payload.get("location")
         candidate = ""
         if isinstance(location, str):
@@ -627,6 +640,50 @@ class CommandService:
                         break
         normalized, _reason = normalize_city_name(candidate or default_city, default_city)
         return normalized or default_city
+
+    def _decide_weather_city(
+        self,
+        *,
+        query: str,
+        weather_detail_payload: Dict[str, Any],
+        meta_payload: Dict[str, Any],
+    ) -> tuple[str, str]:
+        """
+        决策天气查询城市：query > meta.city > default。
+        返回 (city_value, source)
+        """
+        default_city = self._settings.weather_default_city
+        # 1) query 地点（仅当明确标记为 query 来源时才视为最高优先级）
+        query_city = ""
+        loc_source = weather_detail_payload.get("location_source") or ""
+        if loc_source == "query":
+            query_city = weather_detail_payload.get("location") or ""
+        # 2) meta.city
+        meta_city = ""
+        city_field = meta_payload.get("city")
+        if isinstance(city_field, str) and city_field.strip():
+            meta_city = city_field.strip()
+        elif isinstance(city_field, dict):
+            meta_city = (city_field.get("name") or city_field.get("city") or "").strip()
+        # 3) llm/location 默认给出的城市（仅在无 query/meta 时作为兜底）
+        llm_city = ""
+        if not query_city:
+            llm_city = weather_detail_payload.get("location") or ""
+
+        # 优先使用 query 中的地点（若合理）
+        if query_city:
+            city_value, _ = normalize_city_name(query_city, default_city)
+            return city_value, "query"
+        # 其次 meta.city
+        if meta_city:
+            city_value, _ = normalize_city_name(meta_city, default_city)
+            return city_value, "meta"
+        # 再次使用 llm 推测的城市
+        if llm_city:
+            city_value, _ = normalize_city_name(llm_city, default_city)
+            return city_value, "llm"
+        # 否则默认
+        return default_city, "default"
 
     async def _get_local_weather_context(self, city: str) -> Optional[Dict[str, Any]]:
         """拉取并缓存本地天气摘要供 LLM 参考。"""
@@ -769,6 +826,10 @@ class CommandService:
             return reply_message
         if function_analysis.weather_summary:
             return reply_message
+        if function_analysis.need_clarify:
+            return reply_message
+        if not reply_message:
+            return reply_message
         city = local_weather.get("city") or ""
         # 如果回复中已提及温度、天气或城市，则不重复补充。
         key_tokens = ["℃", "温度", "天气", city]
@@ -816,6 +877,64 @@ class CommandService:
             trimmed += "。"
         augmented = f"{trimmed} {hint}"
         return augmented.strip()
+
+    def _clean_safety_message(
+        self,
+        reply_message: str,
+        *,
+        function_analysis: FunctionAnalysis,
+        query: str,
+    ) -> str:
+        """
+        降低重复安全提示的频率：仅在高风险/不确定场景保留一次短提示。
+        """
+        if not reply_message:
+            return reply_message
+        safety_templates = [
+            "小雅的建议仅供参考，如体温异常请及时咨询医生",
+            "小雅的建议仅供参考，如有不适请及时咨询医生",
+            "健康建议仅供参考，如有不适请及时就医",
+        ]
+        has_safety = any(t in reply_message for t in safety_templates)
+        if not has_safety:
+            return reply_message
+
+        risk_tokens = [
+            "监测",
+            "医生",
+            "问诊",
+            "药",
+            "用药",
+            "服药",
+            "发烧",
+            "发热",
+            "疼",
+            "痛",
+            "不适",
+            "异常",
+        ]
+        result_text = function_analysis.result or ""
+        high_risk = any(token in result_text for token in risk_tokens) or any(
+            token in query for token in risk_tokens
+        )
+
+        # 去除重复提示
+        core = reply_message
+        for t in safety_templates:
+            core = core.replace(t, "")
+        core = core.strip()
+
+        # 非高风险：直接去掉安全提示，保持主体回复
+        if not high_risk:
+            return core or reply_message
+
+        # 高风险：仅保留一次最短提示
+        shortest = min((t for t in safety_templates if t in reply_message), key=len, default="")
+        if not shortest:
+            return core or reply_message
+        if core and core[-1] not in "。！？!?":
+            core += "。"
+        return f"{core} {shortest}".strip()
 
     async def _generate_structured_reply(
         self,
@@ -881,6 +1000,8 @@ class CommandService:
 
         # 组装 meta 信息，同时注入候选联系人，便于后续意图解析精准匹配。
         meta_payload = dict(payload.meta or {})
+        if getattr(payload, "city", None):
+            meta_payload["city"] = payload.city
         if candidate_users:
             meta_payload["user_candidates"] = candidate_users
         elif context.user_candidates:
@@ -943,6 +1064,21 @@ class CommandService:
                 weather_detail_payload = function_analysis.weather_detail or {}
                 weather_needs_realtime = getattr(function_analysis, "weather_needs_realtime", None)
                 rule_source = "llm"
+                # 闹钟过时检测：若解析时间已早于当前时间，则提示澄清，不返回过期时间
+                if function_analysis.result in {"新增闹钟"} and function_analysis.parsed_time:
+                    try:
+                        parsed_dt = datetime.fromisoformat(function_analysis.parsed_time)
+                        if parsed_dt.tzinfo is None:
+                            parsed_dt = parsed_dt.replace(tzinfo=EAST_EIGHT)
+                        now_ts = now_e8()
+                        if parsed_dt <= now_ts:
+                            function_analysis.parsed_time = None
+                            function_analysis.target = ""
+                            function_analysis.need_clarify = True
+                            # 交由 LLM 生成澄清话术，避免本地固定模板
+                            reply_message = function_analysis.clarify_message or reply_message
+                    except Exception:
+                        pass
                 if not (meta_payload.get("context") or {}).get("local_weather"):
                     if (
                         weather_detail_payload
@@ -954,42 +1090,70 @@ class CommandService:
             if (
                 self._weather_service
                 and self._weather_service.enabled
-                and weather_detail_payload
             ):
-                weather_fetch_start = perf_counter()
-                used_query_city = False
-                try:
-                    if weather_detail_payload:
-                        city_from_query, reason = extract_city_from_query(payload.query, self._settings.weather_default_city)
-                        if not city_from_query:
-                            llm_city = weather_detail_payload.get("location") or ""
-                            location_prompt = {
-                                "query": payload.query,
-                                "fallback_city": llm_city or self._settings.weather_default_city,
-                            }
-                            city_from_query = await self._llm_extract_city(location_prompt)
-                        if city_from_query:
-                            city_value, _ = normalize_city_name(city_from_query, self._settings.weather_default_city)
-                            weather_detail_payload["location"] = city_value
-                            weather_detail_payload["location_source"] = "query"
-                            weather_detail_payload["location_confidence"] = max(0.9, float(weather_detail_payload.get("location_confidence") or 0.0))
-                            used_query_city = True
-                    weather_context = await self._weather_service.fetch(
-                        llm_info=weather_detail_payload,
-                        summary=function_analysis.weather_summary,
-                        needs_realtime=bool(weather_needs_realtime),
+                # 若已有细节按细节走；若为空但结果/summary 显示天气需求，则用 meta/query 城市兜底构造最小 detail 以触发拉取
+                if not weather_detail_payload and (
+                    ("天气" in (function_analysis.result or ""))
+                    or function_analysis.weather_summary
+                ):
+                    city_value, city_source = self._decide_weather_city(
                         query=payload.query,
+                        weather_detail_payload={"location": ""},
+                        meta_payload=meta_payload,
                     )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("weather context fetch failed", error=str(exc))
+                    weather_detail_payload = {
+                        "location": city_value,
+                        "location_source": city_source,
+                        "location_confidence": 0.9 if city_source != "default" else 0.6,
+                        "target_date": function_analysis.parsed_time,
+                        "target_date_text": function_analysis.time_text,
+                    }
+                if not weather_detail_payload:
                     weather_context = None
                 else:
-                    logger.debug(
-                        "timing handle_command",
-                        step="weather_fetch",
-                        duration=round(perf_counter() - weather_fetch_start, 3),
-                        session_id=session_id,
-                    )
+                    weather_fetch_start = perf_counter()
+                    used_query_city = False
+                    try:
+                        if weather_detail_payload:
+                            # 按优先级决策城市：query > meta.city > default
+                            city_value, city_source = self._decide_weather_city(
+                                query=payload.query,
+                                weather_detail_payload=weather_detail_payload,
+                                meta_payload=meta_payload,
+                            )
+                            # 如果 query 中没有解析到城市，尝试 LLM 提取
+                            if city_source != "query":
+                                city_from_query, reason = extract_city_from_query(payload.query, self._settings.weather_default_city)
+                                if not city_from_query:
+                                    llm_city = weather_detail_payload.get("location") or ""
+                                    location_prompt = {
+                                        "query": payload.query,
+                                        "fallback_city": llm_city or self._settings.weather_default_city,
+                                    }
+                                    city_from_query = await self._llm_extract_city(location_prompt)
+                                if city_from_query:
+                                    city_value, _ = normalize_city_name(city_from_query, self._settings.weather_default_city)
+                                    city_source = "query"
+                            weather_detail_payload["location"] = city_value
+                            weather_detail_payload["location_source"] = city_source
+                            weather_detail_payload["location_confidence"] = max(0.9, float(weather_detail_payload.get("location_confidence") or 0.0)) if city_source == "query" else max(float(weather_detail_payload.get("location_confidence") or 0.0), 0.8)
+                            used_query_city = city_source == "query"
+                        weather_context = await self._weather_service.fetch(
+                            llm_info=weather_detail_payload,
+                            summary=function_analysis.weather_summary,
+                            needs_realtime=bool(weather_needs_realtime),
+                            query=payload.query,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("weather context fetch failed", error=str(exc))
+                        weather_context = None
+                    else:
+                        logger.debug(
+                            "timing handle_command",
+                            step="weather_fetch",
+                            duration=round(perf_counter() - weather_fetch_start, 3),
+                            session_id=session_id,
+                        )
 
             if weather_context:
                 base_summary = weather_context.summary
@@ -1137,10 +1301,13 @@ class CommandService:
                 if function_analysis.weather_summary:
                     function_analysis.weather_summary = function_analysis.weather_summary.replace(location_name, default_city)
         use_fallback = False
-        if not trimmed_reply:
-            use_fallback = True
-        elif function_analysis.need_clarify and not function_analysis.clarify_message:
-            use_fallback = True
+        # 对 need_clarify 场景，不使用本地兜底，完全依赖 LLM/clarify_message
+        is_unknown_clarify = not function_analysis.result and function_analysis.need_clarify
+        if not function_analysis.need_clarify:
+            if not trimmed_reply:
+                use_fallback = True
+            elif function_analysis.need_clarify and not function_analysis.clarify_message and not is_unknown_clarify:
+                use_fallback = True
 
         reply_origin = "rule" if rule_match else "llm"
         if use_fallback:
@@ -1151,6 +1318,11 @@ class CommandService:
             response_message = trimmed_reply
             reply_source = reply_origin
 
+        response_message = self._clean_safety_message(
+            response_message,
+            function_analysis=function_analysis,
+            query=payload.query,
+        )
         response_message = self._maybe_append_weather_hint(
             response_message,
             meta_payload=meta_payload,
@@ -1206,6 +1378,11 @@ class CommandService:
             query_city, _ = extract_city_from_query(payload.query, self._settings.weather_default_city)
             if query_city and query_city == location_name:
                 detail_meta["location_source"] = "query"
+
+        # 若没有回复文本但有澄清语，优先使用澄清语
+        trimmed_reply = (response_message or "").strip()
+        if not trimmed_reply and function_analysis.need_clarify and function_analysis.clarify_message:
+            response_message = function_analysis.clarify_message
 
         return CommandResponse(
             code=200,

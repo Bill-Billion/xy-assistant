@@ -143,7 +143,7 @@ class IntentClassifier:
         reply_message = (
             llm_parsed.get("reply")
             or function_analysis.get("clarify_message")
-            or self._default_reply(function_analysis)
+            or ("" if function_analysis.get("need_clarify") else self._default_reply(function_analysis))
         )
 
         if self._should_clarify(function_analysis):
@@ -151,9 +151,9 @@ class IntentClassifier:
             if function_analysis.get("clarify_message"):
                 reply_message = function_analysis["clarify_message"]
             else:
-                clarify_message = "我需要再确认一下，方便详细说说吗？"
-                function_analysis["clarify_message"] = clarify_message
-                reply_message = clarify_message
+                # 不使用本地兜底澄清，由 LLM 生成；若为空则保持空
+                function_analysis["clarify_message"] = None
+                # reply_message 保持 LLM 输出或空
         else:
             function_analysis.setdefault("need_clarify", False)
 
@@ -268,14 +268,7 @@ class IntentClassifier:
             safety_notice = DEFAULT_SAFETY_NOTICE
 
         if intent_code == IntentCode.UNKNOWN:
-            if advice:
-                need_clarify = True
-                if not clarify_message:
-                    clarify_message = "这些建议是否对您有帮助？需要我再安排其他服务吗？"
-            else:
-                need_clarify = True
-                if not clarify_message:
-                    clarify_message = "我暂时无法识别您的需求，可以再具体描述一下吗？"
+            need_clarify = True
 
         if intent_code in ACTIONABLE_INTENTS and confidence >= self._confidence_threshold:
             need_clarify = False
@@ -286,11 +279,8 @@ class IntentClassifier:
             result = definition.result if intent_code != IntentCode.UNKNOWN else ""
             if not result:
                 need_clarify = True
-                if not clarify_message:
-                    clarify_message = "我不是很确定您的需求，麻烦再具体描述一下好吗？"
 
-        if need_clarify and not clarify_message:
-            clarify_message = "我需要再确认一下，方便详细说明吗？"
+        # 澄清阶段完全依赖 LLM 提供的 clarify_message/reply，不做本地兜底
 
         if intent_code in ACTIONABLE_INTENTS:
             advice = None
@@ -510,9 +500,9 @@ class IntentClassifier:
         advice = function_analysis.get("advice")
         safety = function_analysis.get("safety_notice")
         if function_analysis.get("need_clarify"):
-            clarify = function_analysis.get("clarify_message") or "我需要确认一下您的需求，可以详细说明吗？"
+            clarify = function_analysis.get("clarify_message") or ""
             parts = [part for part in [advice, safety, clarify] if part]
-            return " ".join(parts) if parts else clarify
+            return " ".join(parts).strip()
         parts = [part for part in [advice, safety] if part]
         if result:
             parts.append(f"好的，我会为您处理{result}相关的请求。")

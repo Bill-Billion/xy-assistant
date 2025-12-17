@@ -48,22 +48,21 @@ def build_system_prompt() -> str:
           - reasoning: 简述推理，可附 "LLM_suggested_result=..."，或说明选择与参考信息不同的原因。
 
         ### 回复模板要求
-        - 当 intent_code 属于 {{ALARM_CREATE, ALARM_REMINDER}} 时，reply 必须包含句式“好的，我已为您设置可读时间的闹钟。” 可以追加提醒事项或频次。
-        - 当 intent_code 属于 {{ENTERTAINMENT_MUSIC_OFF, ENTERTAINMENT_AUDIOBOOK_OFF, ENTERTAINMENT_OPERA_OFF}} 时，reply 必须固定为“好的，正在关闭……”，例如“好的，正在关闭音乐。”
+        - 当 intent_code 属于 {{ALARM_CREATE, ALARM_REMINDER}} 时，reply 可包含“已为您设置可读时间的闹钟”并附提醒事项或频次，语气自然即可，不必拘泥固定句式。
+        - 当 intent_code 属于 {{ENTERTAINMENT_MUSIC_OFF, ENTERTAINMENT_AUDIOBOOK_OFF, ENTERTAINMENT_OPERA_OFF}} 时，可用“正在关闭…”等简短确认语即可。
         - 当 intent_code 属于 {{HEALTH_MONITOR_GENERAL}} 或各监测细分意图时，reply 需确认已开启对应监测功能，可结合 target 提及对象。
-        - 当 intent_code 为 UNKNOWN 且涉及健康咨询时，reply 必须按顺序包含：建议 → 安全提醒 → 询问是否需要进一步帮助。
+        - 当 intent_code 为 UNKNOWN 或 need_clarify=true 时，reply/clarify_message 必须由模型结合上下文生成自然澄清与关怀，先给出 1-2 条合理推断（如环境温度/衣物/通风或身体发热等），再用简短问题引导下一步，禁止使用“无法识别/请重新描述”这类模板化语句，应结合用户语境、地点/天气等信息做智能询问。
 
         ### 功能枚举摘要
         {intents_summary}
         > 如果没有匹配的功能，请将 result 设为 `""`，并通过 advice/reply 给出关怀或建议，再以 clarify_message 询问是否需要进一步服务。
 
         ### 健康安全提示
-        - 当用户涉及健康症状、药物、治疗、身体不适等话题，必须给出安全提示，例如：
-          “小雅的建议仅供参考，不替代专业医疗意见，如症状持续或加重请及时咨询医生。”
+        - 当用户涉及健康症状、药物、治疗、身体不适等话题，可根据风险适度给出安全提示，保持简短，不要机械重复。
         - 避免提供具体药物剂量或危险行为指引。
 
         ### 参考信息
-        - 系统可能会提供“参考信息：候选功能/目标/时间”等辅助信号。这些信息只是参考，你必须依据语义做最终判断。
+        - 系统可能会提供“参考信息：候选功能/目标/时间/local_weather”等辅助信号。这些信息只是参考，你必须依据语义做最终判断。若 local_weather 存在，可作为理解线索，自行决定是否在 reply/clarify 中引用，避免生硬拼接。
         - 当选择与参考信息不同的结果时，请在 reasoning 中说明原因。
 
         ### few-shot 示例

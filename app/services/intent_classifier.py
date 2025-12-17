@@ -284,9 +284,8 @@ class IntentClassifier:
             if function_analysis.get("clarify_message"):
                 reply_message = function_analysis["clarify_message"]
             else:
-                clarify_message = "我需要再确认一下，方便详细说说吗？"
-                function_analysis["clarify_message"] = clarify_message
-                reply_message = clarify_message
+                # 不做本地兜底澄清，完全依赖 LLM 提供，若为空则保持空
+                function_analysis["clarify_message"] = None
         else:
             function_analysis.setdefault("need_clarify", False)
             if not reply_message:
@@ -566,6 +565,28 @@ class IntentClassifier:
         def _contains_chat_keyword(text: str) -> bool:
             return any(token in (text or "") for token in CHAT_KEYWORDS)
 
+        # 切歌兜底归一：若意图或候选属于娱乐/音乐控制且命中关键词，则强制 result 归一
+        def _contains_prev(text: str) -> bool:
+            return any(token in (text or "") for token in ["上一首", "上一曲", "上一个", "上首", "往前一首", "上一段", "上一节"])
+
+        def _contains_next(text: str) -> bool:
+            return any(token in (text or "") for token in ["下一首", "下一曲", "下一个", "下首", "往后一首", "下一段", "下一节"])
+
+        if intent_code in {
+            IntentCode.ENTERTAINMENT_GENERAL,
+            IntentCode.ENTERTAINMENT_MUSIC,
+            IntentCode.ENTERTAINMENT_MUSIC_SPECIFIC,
+            IntentCode.ENTERTAINMENT_RESUME,
+            IntentCode.ENTERTAINMENT_PREV_TRACK,
+            IntentCode.ENTERTAINMENT_NEXT_TRACK,
+        }:
+            if _contains_prev(query):
+                intent_code = IntentCode.ENTERTAINMENT_PREV_TRACK
+                result = "上一首"
+            elif _contains_next(query):
+                intent_code = IntentCode.ENTERTAINMENT_NEXT_TRACK
+                result = "下一首"
+
         if (intent_code == IntentCode.CHAT or result == "语音陪伴或聊天") and not _contains_chat_keyword(query):
             intent_code = IntentCode.UNKNOWN
             result = "未知指令"
@@ -750,24 +771,22 @@ class IntentClassifier:
         if is_health and intent_code not in ACTIONABLE_INTENTS and not safety_notice:
             safety_notice = DEFAULT_SAFETY_NOTICE
 
-        if intent_code == IntentCode.UNKNOWN:
-            if advice:
+        # 模糊症状：交给澄清流程，不直接归入健康科普/监测
+        if self._is_vague_symptom_query(query):
+            if intent_code not in WEATHER_INTENT_CODES and intent_code not in ACTIONABLE_INTENTS:
+                intent_code = IntentCode.UNKNOWN
+                result = ""
                 need_clarify = True
-                if not clarify_message:
-                    clarify_message = "这些建议是否对您有帮助？需要我再安排其他服务吗？"
-            else:
-                need_clarify = True
-                if not clarify_message:
-                    clarify_message = "我暂时无法识别您的需求，可以再具体描述一下吗？"
+                advice = None
+                safety_notice = None
+                # 不写死澄清话术，由上游 LLM reply/clarify_message 生成；若 LLM 未给出则保持空
+                reasoning_parts.append("vague_symptom_clarify")
 
-        if (
-            selected_candidate
-            and selected_candidate.get("confidence", 0.0) < self._confidence_threshold
-            and intent_code not in ACTIONABLE_INTENTS
-        ):
+        # UNKNOWN 或低置信候选：保持 need_clarify，但不生成本地澄清文案
+        if intent_code == IntentCode.UNKNOWN:
             need_clarify = True
-            if not clarify_message:
-                clarify_message = "为了确认没有理解错，您可以再具体说明一下需求吗？"
+        if selected_candidate and selected_candidate.get("confidence", 0.0) < self._confidence_threshold and intent_code not in ACTIONABLE_INTENTS:
+            need_clarify = True
 
         if intent_code in ACTIONABLE_INTENTS and confidence >= self._confidence_threshold and not time_uncertain:
             need_clarify = False
@@ -778,11 +797,9 @@ class IntentClassifier:
             result = definition.result if intent_code != IntentCode.UNKNOWN else ""
             if not result:
                 need_clarify = True
-                if not clarify_message:
-                    clarify_message = "我不是很确定您的需求，麻烦再具体描述一下好吗？"
 
-        if need_clarify and not clarify_message:
-            clarify_message = "我需要再确认一下，方便详细说明吗？"
+        # 澄清阶段完全依赖 LLM 提供的 clarify_message/reply，不做本地兜底
+        # 若 LLM 未提供，clarify_message 可保持为空，由上游直接返回空或回复内容
 
         if intent_code in ACTIONABLE_INTENTS:
             advice = None
@@ -939,11 +956,30 @@ class IntentClassifier:
             return
 
         if current_target:
-            conversation_state.last_selected_user = current_target
-            return
+            # 如果当前 target 不在候选名单，尝试用候选覆盖（优先单一候选或模糊匹配）
+            if current_target in candidates and self._looks_like_name(current_target):
+                conversation_state.last_selected_user = current_target
+                return
+            current_target = ""  # 允许后续覆盖
 
         candidate_name = self._extract_candidate_name(query)
         if not candidate_name:
+            # 无法从语句提取姓名时，若仅有单一候选，则直接采用用户提供的候选
+            if len(candidates) == 1:
+                matched = candidates[0]
+                function_analysis["target"] = matched
+                function_analysis["need_clarify"] = False
+                function_analysis["clarify_message"] = None
+                existing_confidence = function_analysis.get("confidence")
+                try:
+                    numeric_conf = float(existing_confidence) if existing_confidence is not None else 0.0
+                except (TypeError, ValueError):
+                    numeric_conf = 0.0
+                function_analysis["confidence"] = max(numeric_conf, 0.85)
+                conversation_state.last_selected_user = matched
+                reasoning = function_analysis.get("reasoning") or ""
+                source_note = f"user_target={matched}"
+                function_analysis["reasoning"] = f"{reasoning}；{source_note}" if reasoning else source_note
             return
 
         matched = None
@@ -951,6 +987,8 @@ class IntentClassifier:
             matched = candidate_name
         else:
             matched = self._fuzzy_match_candidate(candidate_name, candidates)
+        if not matched and len(candidates) == 1:
+            matched = candidates[0]
         if not matched:
             return
 
@@ -964,6 +1002,10 @@ class IntentClassifier:
             numeric_conf = 0.0
         function_analysis["confidence"] = max(numeric_conf, 0.85)
         conversation_state.last_selected_user = matched
+        # 记录来源，便于追踪
+        reasoning = function_analysis.get("reasoning") or ""
+        source_note = f"user_target={matched}"
+        function_analysis["reasoning"] = f"{reasoning}；{source_note}" if reasoning else source_note
 
     def _extract_user_candidates(
         self,
@@ -982,6 +1024,16 @@ class IntentClassifier:
         if candidates and candidates != conversation_state.user_candidates:
             conversation_state.user_candidates = candidates
         return candidates
+
+    @staticmethod
+    def _looks_like_name(text: str) -> bool:
+        """粗略判断字符串是否像人名，用于过滤 '血压测量' 这类非人名 target。"""
+        if not text:
+            return False
+        stripped = text.strip()
+        if len(stripped) <= 1 or len(stripped) > 8:
+            return False
+        return any("\u4e00" <= ch <= "\u9fff" or ch.isalpha() for ch in stripped)
 
     @staticmethod
     def _extract_candidate_name(query: str) -> Optional[str]:
@@ -1078,9 +1130,9 @@ class IntentClassifier:
         status = (function_analysis.get("status") or "").strip()
         target = (function_analysis.get("target") or "").strip()
         if function_analysis.get("need_clarify"):
-            clarify = function_analysis.get("clarify_message") or "我需要确认一下您的需求，可以详细说明吗？"
+            clarify = function_analysis.get("clarify_message") or ""
             parts = [part for part in [advice, safety, clarify] if part]
-            return " ".join(parts) if parts else clarify
+            return " ".join(parts).strip()
         parts = [part for part in [advice, safety] if part]
         schedule_bits = [bit for bit in [status, target] if bit]
         schedule_desc = "、".join(schedule_bits)
@@ -1103,3 +1155,12 @@ class IntentClassifier:
         """根据关键字快速判断当前语句是否属于健康相关场景。"""
         combined = (query or '') + (advice or '') + (result or '')
         return any(keyword in combined for keyword in HEALTH_KEYWORDS)
+
+    def _is_vague_symptom_query(self, query: str) -> bool:
+        """判断是否为模糊的身体感受描述，缺少明确疾病/指标信息。"""
+        q = query.lower()
+        vague_tokens = ["好热", "好冷", "不舒服", "难受", "发困", "乏力", "头晕", "恶心", "闷得慌", "没精神"]
+        strong_health_markers = ["发烧", "体温", "度", "血压", "血糖", "心率", "心电", "用药", "药", "医生", "医院", "咳", "疼", "痛", "呕吐", "拉肚子"]
+        has_vague = any(tok in q for tok in vague_tokens)
+        has_strong = any(tok in q for tok in strong_health_markers)
+        return has_vague and not has_strong
