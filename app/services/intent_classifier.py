@@ -292,6 +292,15 @@ class IntentClassifier:
             if not reply_message:
                 reply_message = self._default_reply(function_analysis)
 
+        # 多轮澄清：若上一轮 result 为空且仍处于澄清中，保持 result 为空，避免回退为“未知指令”干扰前端路由
+        if function_analysis.get("need_clarify"):
+            last_fa = conversation_state.last_function_analysis or {}
+            last_result = (last_fa.get("result") or "").strip()
+            if last_result == "":
+                current_result = (function_analysis.get("result") or "").strip()
+                if current_result in {"未知指令"}:
+                    function_analysis["result"] = ""
+
         logger.info(
             "classification completed",
             session_id=session_id,
