@@ -24,9 +24,18 @@ from app.services.prompt_templates import (
     build_user_selection_prompt,
     build_weather_reply_prompt,
     build_city_extraction_prompt,
+    build_lunar_strategy_prompt,
 )
 from app.utils.calendar_utils import format_lunar_summary, get_lunar_info
-from app.utils.time_utils import describe_alarm_target, now_e8, sanitize_person_name, EAST_EIGHT
+from app.utils.time_utils import (
+    EAST_EIGHT,
+    describe_alarm_target,
+    extract_lunar_date_spec,
+    get_current_lunar_year,
+    now_e8,
+    resolve_lunar_to_solar,
+    sanitize_person_name,
+)
 from app.utils.location_utils import extract_city_from_query, normalize_city_name
 
 
@@ -240,6 +249,9 @@ def _render_template(function_analysis: FunctionAnalysis) -> str | None:
         summary = format_lunar_summary(lunar)
         label = (function_analysis.time_text or "当前日期").strip()
         date_text = target_dt.strftime("%Y年%m月%d日")
+        # 若用户询问的是“农历X月X是什么时候”，优先播报其对应公历日期
+        if "农历" in label:
+            return f"{label}对应的公历日期是{date_text}。"
         if summary:
             return f"{label}（{date_text}）的农历信息：{summary}。"
         return f"{label}（{date_text}）暂无可用的农历详细信息，我会持续关注更新。"
@@ -351,9 +363,11 @@ class CommandService:
         self._selection_prompt = build_user_selection_prompt() if reply_llm_client else None
         self._weather_reply_prompt = build_weather_reply_prompt() if reply_llm_client else None
         self._city_extraction_prompt = build_city_extraction_prompt() if reply_llm_client else None
+        self._lunar_strategy_prompt = build_lunar_strategy_prompt() if reply_llm_client else None
         self._reply_cache: TTLCache | None = TTLCache(maxsize=256, ttl=60) if reply_llm_client else None
         self._selection_cache: TTLCache | None = TTLCache(maxsize=256, ttl=300) if reply_llm_client else None
         self._city_cache: TTLCache | None = TTLCache(maxsize=256, ttl=300) if reply_llm_client else None
+        self._lunar_strategy_cache: TTLCache | None = TTLCache(maxsize=256, ttl=600) if reply_llm_client else None
         self._local_weather_cache: TTLCache | None = (
             TTLCache(maxsize=32, ttl=180) if weather_service and weather_service.enabled else None
         )
@@ -613,6 +627,160 @@ class CommandService:
         except Exception as exc:  # noqa: BLE001
             logger.warning("city extraction LLM failed", error=str(exc))
             return None
+
+    async def _llm_decide_lunar_strategy(
+        self,
+        *,
+        session_id: str,
+        query: str,
+        lunar_phrase: str,
+        current_lunar_year: int,
+    ) -> Dict[str, Any]:
+        """
+        使用 LLM 判断农历查询策略（未来最近一次 / 今年 / 需要澄清 / 年份偏移）。
+        仅用于“农历X月X”这类需要转换为公历的场景，提示词尽量短以控制时延。
+        """
+        default_decision: Dict[str, Any] = {
+            "strategy": "next_occurrence",
+            "year_offset": None,
+            "need_clarify": False,
+            "clarify_message": "",
+        }
+        if not self._reply_llm_client or not self._lunar_strategy_prompt:
+            return default_decision
+
+        payload = {
+            "query": (query or "").strip(),
+            "lunar_phrase": lunar_phrase,
+            "base_time_e8": now_e8().strftime("%Y-%m-%d %H:%M:%S"),
+            "current_lunar_year": current_lunar_year,
+        }
+
+        cache_key = None
+        if self._lunar_strategy_cache is not None:
+            try:
+                cache_key = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+            except (TypeError, ValueError):
+                cache_key = None
+            else:
+                cached = self._lunar_strategy_cache.get(cache_key)
+                if isinstance(cached, dict):
+                    return dict(default_decision, **cached)
+
+        try:
+            _raw, parsed = await self._reply_llm_client.chat(
+                system_prompt=self._lunar_strategy_prompt,
+                messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
+                response_format={"type": "json_object"},
+                overrides={"max_tokens": 120, "temperature": 0.2, "top_p": 0.9},
+            )
+            if not isinstance(parsed, dict):
+                return default_decision
+
+            strategy = (parsed.get("strategy") or "").strip()
+            if strategy not in {"next_occurrence", "this_year", "year_offset", "ask_clarify"}:
+                strategy = "next_occurrence"
+
+            year_offset = parsed.get("year_offset")
+            year_offset_value: Optional[int] = None
+            if strategy == "year_offset":
+                try:
+                    year_offset_value = int(year_offset)
+                except (TypeError, ValueError):
+                    year_offset_value = None
+
+            need_clarify = bool(parsed.get("need_clarify", False))
+            clarify_message = (parsed.get("clarify_message") or "").strip()
+            if strategy == "ask_clarify":
+                need_clarify = True
+
+            decision = {
+                "strategy": strategy,
+                "year_offset": year_offset_value,
+                "need_clarify": need_clarify,
+                "clarify_message": clarify_message,
+            }
+            if cache_key and self._lunar_strategy_cache is not None:
+                self._lunar_strategy_cache[cache_key] = decision
+            return dict(default_decision, **decision)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("lunar strategy LLM failed", error=str(exc), session_id=session_id)
+            return default_decision
+
+    async def _maybe_resolve_lunar_calendar(
+        self,
+        *,
+        session_id: str,
+        query: str,
+        function_analysis: FunctionAnalysis,
+    ) -> Optional[str]:
+        """
+        对“农历X月X是什么时候”这类询问：
+        - 先用 LLM 判定策略（未来最近一次/今年/需澄清）
+        - 再用 lunar_python 做确定性转换，写入 target/parsed_time/time_text
+        - 返回用于 msg 的文本（优先使用模板），若无需处理则返回 None
+        """
+        if (function_analysis.result or "").strip() != "日期时间和万年历":
+            return None
+
+        spec = extract_lunar_date_spec(query)
+        if not spec:
+            return None
+
+        base_time = now_e8()
+        current_lunar_year = get_current_lunar_year(base_time)
+        decision = await self._llm_decide_lunar_strategy(
+            session_id=session_id,
+            query=query,
+            lunar_phrase=spec.phrase,
+            current_lunar_year=current_lunar_year,
+        )
+
+        if decision.get("need_clarify") and decision.get("clarify_message"):
+            function_analysis.need_clarify = True
+            function_analysis.clarify_message = decision.get("clarify_message") or None
+            function_analysis.target = ""
+            if function_analysis.reasoning:
+                function_analysis.reasoning += "；lunar_strategy=ask"
+            else:
+                function_analysis.reasoning = "lunar_strategy=ask"
+            return function_analysis.clarify_message or ""
+
+        strategy = decision.get("strategy") or "next_occurrence"
+        year_offset = decision.get("year_offset")
+        dt = resolve_lunar_to_solar(
+            spec,
+            base_time=base_time,
+            strategy=strategy,
+            year_offset=year_offset,
+            max_years=15,
+        )
+        if dt is None and strategy != "next_occurrence":
+            dt = resolve_lunar_to_solar(spec, base_time=base_time, strategy="next_occurrence", max_years=20)
+        if dt is None:
+            # 极端情况：无法转换（可能是非法日期），交给澄清
+            function_analysis.need_clarify = True
+            function_analysis.clarify_message = "我需要确认您要查询的农历日期是否正确（例如是否为闰月/日期是否存在），方便再说一下吗？"
+            function_analysis.target = ""
+            if function_analysis.reasoning:
+                function_analysis.reasoning += "；lunar_convert_failed"
+            else:
+                function_analysis.reasoning = "lunar_convert_failed"
+            return function_analysis.clarify_message
+
+        function_analysis.time_text = spec.phrase
+        function_analysis.parsed_time = dt.isoformat()
+        function_analysis.target = dt.strftime("%Y-%m-%d %H:%M:%S")
+        function_analysis.time_confidence = max(function_analysis.time_confidence or 0.0, 0.99)
+        function_analysis.time_source = "lunar_python"
+        function_analysis.need_clarify = False
+        function_analysis.clarify_message = None
+        if function_analysis.reasoning:
+            function_analysis.reasoning += f"；lunar_strategy={strategy}"
+        else:
+            function_analysis.reasoning = f"lunar_strategy={strategy}"
+        date_text = dt.strftime("%Y年%m月%d日")
+        return f"{spec.phrase}对应的公历日期是{date_text}。"
 
     def _resolve_context_city(self, meta_payload: Dict[str, Any]) -> str:
         """提取用于天气查询的城市信息，默认回退到系统配置。"""
@@ -1101,6 +1269,16 @@ class CommandService:
                         or (function_analysis.need_clarify and self._should_attach_local_weather(payload.query))
                     ):
                         await self._ensure_local_weather_meta(meta_payload)
+
+            # 农历转公历：对“农历X月X是什么时候”类查询，使用 LLM 判定策略，再用 lunar_python 确定性转换并填充 target/msg
+            lunar_reply = await self._maybe_resolve_lunar_calendar(
+                session_id=session_id,
+                query=payload.query,
+                function_analysis=function_analysis,
+            )
+            if lunar_reply:
+                # 对农历→公历转换类问题，优先使用确定性播报，避免主 LLM 话术掺入无关内容造成不一致
+                reply_message = lunar_reply
 
             if (
                 self._weather_service

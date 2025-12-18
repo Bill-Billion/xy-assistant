@@ -14,15 +14,32 @@ def get_lunar_info(date: datetime) -> Optional[dict[str, str]]:
         localized = date.astimezone(EAST_EIGHT)
         solar = Solar.fromYmd(localized.year, localized.month, localized.day)
         lunar = solar.getLunar()
+        festivals = []
+        try:
+            festivals = list(lunar.getFestivals() or [])
+        except Exception:  # noqa: BLE001
+            festivals = []
+        try:
+            festivals.extend(list(lunar.getOtherFestivals() or []))
+        except Exception:  # noqa: BLE001
+            pass
+        festival_text = ",".join([f for f in festivals if f])
+        jie_qi = lunar.getJieQi()
+        jie_qi_text = str(jie_qi) if jie_qi else ""
+        prev_term = lunar.getPrevJieQi()
+        next_term = lunar.getNextJieQi()
+        solar_terms_text = ",".join(
+            [t for t in [str(prev_term) if prev_term else "", str(next_term) if next_term else ""] if t]
+        )
         return {
             "solar_date": solar.toFullString(),
             "lunar_date": lunar.toString(),
             "gan_zhi": f"{lunar.getYearInGanZhi()}年{lunar.getMonthInGanZhi()}月{lunar.getDayInGanZhi()}日",
-            "festival": lunar.getFestival(),
-            "jie_qi": lunar.getJieQi(),
+            "festival": festival_text,
+            "jie_qi": jie_qi_text,
             "yi": ",".join(lunar.getDayYi() or []),
             "ji": ",".join(lunar.getDayJi() or []),
-            "solar_terms": ",".join(filter(None, [lunar.getPrevJieQi(), lunar.getNextJieQi()])),
+            "solar_terms": solar_terms_text,
         }
     except Exception:  # noqa: BLE001
         return None

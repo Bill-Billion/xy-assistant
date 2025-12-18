@@ -222,6 +222,34 @@ def build_city_extraction_prompt() -> str:
     ).strip()
 
 
+def build_lunar_strategy_prompt() -> str:
+    """构造用于“农历月日 → 公历日期”策略判定的精简提示词。"""
+    return dedent(
+        """
+        你是中南小雅数字健康机器人的“日期理解模块”，只负责判断用户在询问农历日期时想要的“年份/最近一次”策略。
+
+        任务：
+        - 输入是一段 JSON，其中包含 query、当前时间（东八区）、当前农历年份、以及已抽取的农历短语（如“农历九月十八”）。
+        - 你需要判断用户更可能想要：
+          1) 未来最近一次出现的日期（默认）
+          2) 今年（当前农历年）对应的日期
+          3) 需要澄清（例如用户问“哪一年/具体哪一年的农历九月十八”）
+          4) 若用户明确说“明年/后年/去年”，用 year_offset 表达偏移（1/2/-1）
+
+        输出：
+        - 仅输出 JSON 对象，禁止额外文本，格式如下：
+          {"strategy": "next_occurrence|this_year|year_offset|ask_clarify", "year_offset": 0, "need_clarify": false, "clarify_message": ""}
+
+        规则：
+        - 未出现年份相关词时，默认 strategy="next_occurrence"。
+        - 出现“今年/本年”→ strategy="this_year"。
+        - 出现“明年/后年/去年”→ strategy="year_offset" 且 year_offset=1/2/-1。
+        - 若用户明确问“哪一年/几几年/具体哪一年”但没有提供年份 → strategy="ask_clarify" 且 need_clarify=true，并给出一句自然的澄清问题。
+        - 若用户已经提供了明确年份（如“2026年农历九月十八”），也可用 strategy="this_year" 且 year_offset=0（后续由系统做确定性转换），无需澄清。
+        """
+    ).strip()
+
+
 def get_allowed_results() -> set[str]:
     """返回允许的 result 集合，供运行时校验。"""
     return set(ALLOWED_RESULTS)

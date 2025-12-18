@@ -14,6 +14,8 @@ except ModuleNotFoundError:  # pragma: no cover - optional dependency
 import dateparser
 from zoneinfo import ZoneInfo
 
+from lunar_python import Lunar, Solar
+
 EAST_EIGHT = ZoneInfo("Asia/Shanghai")
 
 _DATE_LABEL_PATTERNS = [
@@ -54,12 +56,19 @@ _WEEKDAY_MAP = {
 
 _WEEK_PREFIX_PATTERN = re.compile(r"(?P<prefix>下+|这|本)?(?:周|星期|礼拜)(?P<day>[一二三四五六日天1234567])")
 _RELATIVE_DAY_PATTERN = re.compile(r"(?P<num>[零〇一二三四五六七八九十百千万两兩\d]+)天后")
-_LUNAR_SPECIFIC_PATTERN = re.compile(
-    r"农历(?P<leap>闰)?(?P<month>[正冬腊一二三四五六七八九十0-9两兩]+)月(?P<day>[初十廿卅三十二一二三四五六七八九十0-9两兩]+)"
+# 农历日期识别：
+# - 显式：带“农历/阴历”前缀（允许数字月日，如“农历9月18”）
+# - 隐式：不带前缀但使用传统月份词（冬月/腊月/正月/元月），通常也指农历（如“冬月初四”）
+_LUNAR_EXPLICIT_PATTERN = re.compile(
+    r"(?:农历|阴历)(?P<leap>闰)?(?P<month>[正元冬腊一二三四五六七八九十0-9两兩]+)月(?P<day>[初十廿卅三十二一二三四五六七八九十0-9两兩]+)"
+)
+_LUNAR_SPECIAL_MONTH_PATTERN = re.compile(
+    r"(?P<leap>闰)?(?P<month>[正元冬腊])月(?P<day>[初十廿卅三十二一二三四五六七八九十0-9两兩]+)"
 )
 
 _SPECIAL_MONTH_MAP = {
     "正": 1,
+    "元": 1,
     "腊": 12,
     "冬": 11,
 }
@@ -273,6 +282,12 @@ def _convert_lunar_month(month_text: str) -> Optional[int]:
     if text.isdigit():
         value = int(text)
         return value if 1 <= value <= 12 else None
+    parsed = _parse_chinese_number(text)
+    if parsed is not None:
+        if abs(parsed - round(parsed)) < 1e-6:
+            value = int(round(parsed))
+            return value if 1 <= value <= 12 else None
+        return None
     # 处理十月、十一、十二
     replacements = {
         "十": 10,
@@ -296,9 +311,19 @@ def _convert_lunar_day(day_text: str) -> Optional[int]:
     text = day_text.replace("日", "").replace("号", "").strip()
     if not text:
         return None
+    if text.isdigit():
+        value = int(text)
+        return value if 1 <= value <= 30 else None
     if text.startswith("初"):
         base = _parse_numeric_text(text[1:])
-        return base if base is not None else None
+        if base is None:
+            base = _parse_chinese_number(text[1:])
+        if base is None:
+            return None
+        if abs(float(base) - round(float(base))) > 1e-6:
+            return None
+        value = int(round(float(base)))
+        return value if 1 <= value <= 10 else None
     if text.startswith("廿"):
         if text == "廿":
             return 20
@@ -337,6 +362,12 @@ def _convert_lunar_day(day_text: str) -> Optional[int]:
         return 29
     if text in {"三十一", "三十 一"}:
         return 31
+    parsed = _parse_chinese_number(text)
+    if parsed is not None:
+        if abs(parsed - round(parsed)) < 1e-6:
+            value = int(round(parsed))
+            return value if 1 <= value <= 30 else None
+        return None
     if cn2an is not None:
         try:
             value = int(cn2an.cn2an(text, "smart"))
@@ -347,46 +378,109 @@ def _convert_lunar_day(day_text: str) -> Optional[int]:
 
 
 def parse_lunar_request(text: str, base_time: Optional[datetime] = None) -> Optional[Tuple[datetime, str]]:
-    match = _LUNAR_SPECIFIC_PATTERN.search(text)
+    spec = extract_lunar_date_spec(text)
+    if not spec:
+        return None
+
+    dt = resolve_lunar_to_solar(spec, base_time=base_time, strategy="next_occurrence", max_years=15)
+    if not dt:
+        return None
+    return dt.replace(hour=0, minute=0, second=0, microsecond=0), spec.phrase
+
+
+@dataclass
+class LunarDateSpec:
+    """农历月日表达（如“农历九月十八”），用于后续策略选择与转换。"""
+
+    month: int
+    day: int
+    is_leap: bool
+    phrase: str
+
+
+def extract_lunar_date_spec(text: str) -> Optional[LunarDateSpec]:
+    """从文本中提取农历月日表达，失败返回 None。"""
+    raw = text or ""
+    match = _LUNAR_EXPLICIT_PATTERN.search(raw)
+    if not match:
+        match = _LUNAR_SPECIAL_MONTH_PATTERN.search(raw)
     if not match:
         return None
-
     month = _convert_lunar_month(match.group("month"))
     day = _convert_lunar_day(match.group("day"))
-    is_leap = bool(match.group("leap"))
     if month is None or day is None:
         return None
+    return LunarDateSpec(
+        month=month,
+        day=day,
+        is_leap=bool(match.group("leap")),
+        phrase=match.group(0),
+    )
 
+
+def get_current_lunar_year(base_time: Optional[datetime] = None) -> int:
+    """获取当前（东八区）所属的农历年份，例如 2026-01-15 仍可能属于农历 2025 年。"""
     base = (base_time or now_e8()).astimezone(EAST_EIGHT)
-    for offset in range(0, 730):
-        candidate = base + timedelta(days=offset)
-        solar = Solar.fromYmd(candidate.year, candidate.month, candidate.day)
-        lunar = solar.getLunar()
+    solar = Solar.fromYmd(base.year, base.month, base.day)
+    lunar = solar.getLunar()
+    return int(lunar.getYear())
+
+
+def lunar_to_solar_datetime(lunar_year: int, spec: LunarDateSpec) -> datetime:
+    """将指定农历年月日转换为对应公历日期（00:00:00）。"""
+    lunar_month = -spec.month if spec.is_leap else spec.month
+    lunar = Lunar.fromYmd(lunar_year, lunar_month, spec.day)
+    solar = lunar.getSolar()
+    return datetime(
+        year=int(solar.getYear()),
+        month=int(solar.getMonth()),
+        day=int(solar.getDay()),
+        hour=0,
+        minute=0,
+        second=0,
+        tzinfo=EAST_EIGHT,
+    )
+
+
+def resolve_lunar_to_solar(
+    spec: LunarDateSpec,
+    *,
+    base_time: Optional[datetime] = None,
+    strategy: str = "next_occurrence",
+    year_offset: Optional[int] = None,
+    max_years: int = 10,
+) -> Optional[datetime]:
+    """
+    根据策略将农历月日转换为公历日期。
+
+    - next_occurrence：返回未来最近一次（默认）
+    - this_year：返回当前农历年对应的日期（可能在过去）
+    - year_offset：相对当前农历年的偏移（-1/0/1…）
+    """
+    base = (base_time or now_e8()).astimezone(EAST_EIGHT)
+    current_year = get_current_lunar_year(base)
+
+    if strategy == "this_year":
         try:
-            lunar_month = lunar.getMonth()
-            lunar_day = lunar.getDay()
-            leap_flag = False
-            if hasattr(lunar, "isLeap"):
-                leap_flag = lunar.isLeap()
-            elif hasattr(lunar, "isLeapMonth"):
-                leap_flag = lunar.isLeapMonth()
-            if lunar_month < 0:
-                lunar_month = abs(lunar_month)
-                leap_flag = True
-        except AttributeError:
-            lunar_month_text = lunar.getMonthInChinese()
-            lunar_day_text = lunar.getDayInChinese()
-            leap_flag = "闰" in lunar_month_text
-            lunar_month = _convert_lunar_month(lunar_month_text)
-            lunar_day = _convert_lunar_day(lunar_day_text)
-        if lunar_month is None or lunar_day is None:
+            return lunar_to_solar_datetime(current_year, spec)
+        except Exception:  # noqa: BLE001
+            return None
+
+    if strategy == "year_offset" and year_offset is not None:
+        try:
+            return lunar_to_solar_datetime(current_year + int(year_offset), spec)
+        except Exception:  # noqa: BLE001
+            return None
+
+    # 默认：未来最近一次（必要时跨年、跨闰月）
+    for offset in range(0, max(0, int(max_years)) + 1):
+        lunar_year = current_year + offset
+        try:
+            candidate = lunar_to_solar_datetime(lunar_year, spec)
+        except Exception:  # noqa: BLE001
             continue
-        if lunar_month == month and lunar_day == day:
-            if is_leap and not leap_flag:
-                continue
-            if not is_leap and leap_flag:
-                continue
-            return candidate.replace(hour=0, minute=0, second=0, microsecond=0), match.group(0)
+        if candidate.date() >= base.date():
+            return candidate
     return None
 
 
@@ -582,7 +676,7 @@ def _replace_chinese_numerals(text: str) -> str:
 
 
 def _parse_chinese_number(raw: str) -> Optional[float]:
-    raw = raw.strip()
+    raw = raw.strip().replace(" ", "")
     if not raw:
         return None
     if raw in {"半", "半个"}:
@@ -612,6 +706,16 @@ def _parse_chinese_number(raw: str) -> Optional[float]:
     if raw in fallback_map:
         return float(fallback_map[raw])
 
+    # 处理“十一/十二/十九”等两位形式
+    if raw.startswith("十") and len(raw) == 2 and raw[1] in fallback_map:
+        return float(10 + fallback_map[raw[1]])
+    # 处理“二十/三十”等两位形式
+    if len(raw) == 2 and raw[1] == "十" and raw[0] in fallback_map:
+        return float(fallback_map[raw[0]] * 10)
+    # 处理“二十一/三十二”等三位形式
+    if len(raw) == 3 and raw[1] == "十" and raw[0] in fallback_map and raw[2] in fallback_map:
+        return float(fallback_map[raw[0]] * 10 + fallback_map[raw[2]])
+
     try:
         return float(raw)
     except ValueError:
@@ -635,23 +739,6 @@ def extract_time_expression(text: str, base_time: Optional[datetime] = None) -> 
     """抽取文本中的时间表达（绝对时间 / 相对时间 / 周期描述）。"""
     base_time = base_time or now_e8()
     original = text.strip()
-    # 先对原始文本尝试绝对时间匹配，避免清洗后丢失关键信息（如“下午2点10分”）
-    direct_match = _time_pattern.search(original)
-    if direct_match:
-        expr = TimeExpression(raw_text=direct_match.group(0), source="pattern_raw")
-        meridiem = direct_match.group(1) or ""
-        hour = int(direct_match.group(2))
-        minute = int(direct_match.group(4) or 0)
-        resolved_hour = resolve_hour(hour, meridiem, base_time)
-        candidate = base_time.replace(
-            hour=resolved_hour,
-            minute=minute,
-            second=0,
-            microsecond=0,
-        )
-        expr.datetime_value = candidate
-        expr.is_date_only = False
-        return expr
 
     cleaned_no_date = re.sub(_date_pattern, "", original)
     cleaned_no_date = re.sub(r"\d{1,2}月\d{1,2}(?:日|号)?", "", cleaned_no_date)
@@ -672,6 +759,12 @@ def extract_time_expression(text: str, base_time: Optional[datetime] = None) -> 
             expr.raw_text = date_match.group(0)
         except (TypeError, ValueError):
             expr.date_value = None
+    elif expr.date_value is None:
+        # 处理“明天/后天/下周一”等相对日期（避免只解析出时间而忽略日期）
+        relative_date = parse_weather_date(cleaned, base_time)
+        if relative_date and relative_date.value:
+            expr.date_value = relative_date.value.replace(hour=0, minute=0, second=0, microsecond=0)
+            expr.raw_text = expr.raw_text or (relative_date.phrase or "")
 
     for rel_match in _relative_pattern.finditer(cleaned):
         if not rel_match.group(0):
@@ -700,7 +793,10 @@ def extract_time_expression(text: str, base_time: Optional[datetime] = None) -> 
         hour_val = _parse_chinese_number(hour_raw) or 0
         minutes = 30 if minute_token == "半" else (15 if minute_token == "一刻" else 45)
         resolved_hour = resolve_hour(int(hour_val), meridiem, base_time)
-        candidate = base_time.replace(hour=resolved_hour, minute=minutes, second=0, microsecond=0)
+        if expr.date_value:
+            candidate = expr.date_value.replace(hour=resolved_hour, minute=minutes, second=0, microsecond=0)
+        else:
+            candidate = base_time.replace(hour=resolved_hour, minute=minutes, second=0, microsecond=0)
         expr.datetime_value = candidate
         expr.raw_text = expr.raw_text or half_match.group(0)
         expr.is_date_only = False

@@ -13,6 +13,7 @@ from app.utils.time_utils import (
     derive_alarm_target,
     extract_person_name,
     extract_time_expression,
+    extract_lunar_date_spec,
     is_within_days,
     now_e8,
     parse_weather_date,
@@ -605,7 +606,9 @@ def apply_weather_rule(context: RuleContext) -> Optional[RuleResult]:
 def apply_calendar_rule(context: RuleContext) -> Optional[RuleResult]:
     """处理日历、黄历、吉日等需求。"""
     terms = ["几月几日", "农历", "黄历", "黄道吉日", "节气", "日期", "几号", "万年历", "适合搬家", "宜搬家", "搬家吉日"]
-    if any(term in context.query for term in terms) or ("适合" in context.query and "搬家" in context.query):
+    # 兼容用户省略“农历”前缀但使用传统月名（冬月/腊月/正月/元月）表达的场景
+    lunar_spec = extract_lunar_date_spec(context.query)
+    if lunar_spec or any(term in context.query for term in terms) or ("适合" in context.query and "搬家" in context.query):
         target_date, time_text = resolve_calendar_target(context.query, context.base_time)
         lunar = get_lunar_info(target_date)
         summary = format_lunar_summary(lunar) if lunar else None
