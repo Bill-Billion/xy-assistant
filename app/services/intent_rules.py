@@ -985,11 +985,13 @@ def apply_entertainment_rule(context: RuleContext) -> Optional[RuleResult]:
             target = "音乐"
         return RuleResult(IntentCode.ENTERTAINMENT_RESUME, "继续播放", target=target)
 
-    if any(term in q for term in ["娱乐", "玩", "游戏"]):
-        if "斗地主" in q:
-            return RuleResult(IntentCode.GAME_DOU_DI_ZHU, "斗地主")
-        if "象棋" in q:
-            return RuleResult(IntentCode.GAME_CHINESE_CHESS, "中国象棋")
+    # 注意：“玩”在中文里很容易出现在“出去玩/去哪玩/适合去玩”等生活表达中，
+    # 若直接以“玩”为触发词会导致天气/出行建议被误判为娱乐/游戏。
+    if "斗地主" in q:
+        return RuleResult(IntentCode.GAME_DOU_DI_ZHU, "斗地主")
+    if any(term in q for term in ["象棋", "下象棋", "中国象棋", "围棋", "下棋"]):
+        return RuleResult(IntentCode.GAME_CHINESE_CHESS, "中国象棋")
+    if any(term in q for term in ["娱乐", "游戏"]):
         return RuleResult(IntentCode.ENTERTAINMENT_GENERAL, "娱乐")
     if "戏曲" in q or "听戏" in q or "曲艺" in q:
         title = extract_subject(q)

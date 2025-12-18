@@ -44,7 +44,7 @@ HEALTH_MONITOR_RESULTS = {
     "睡眠监测",
 }
 
-REQUIRES_SELECTION_RESULTS = HEALTH_MONITOR_RESULTS | {"健康评估", "健康画像", "小雅医生"}
+REQUIRES_SELECTION_RESULTS = HEALTH_MONITOR_RESULTS | {"健康评估", "健康画像", "小雅医生", "家庭医生"}
 
 
 _WEATHER_CONDITION_TEXT = {
@@ -257,6 +257,21 @@ def _render_template(function_analysis: FunctionAnalysis) -> str | None:
         if function_analysis.target:
             return f"好的，我已为{function_analysis.target}打开{result}功能。"
         return f"好的，我已为您打开{result}功能。"
+
+    if result in {"健康画像", "健康评估"}:
+        if function_analysis.target:
+            return f"好的，我已为{function_analysis.target}打开{result}功能。"
+        return f"好的，我已为您打开{result}功能。"
+
+    if result == "家庭医生":
+        if function_analysis.target:
+            return f"好的，我已为{function_analysis.target}打开家庭医生服务。"
+        return "好的，我已为您打开家庭医生服务。"
+
+    if result == "小雅医生":
+        if function_analysis.target:
+            return f"好的，我已为{function_analysis.target}打开小雅医生功能。"
+        return "好的，我已为您打开小雅医生功能。"
 
     if result == "息屏":
         return "好的，正在为您息屏。"
@@ -1121,19 +1136,30 @@ class CommandService:
                                 weather_detail_payload=weather_detail_payload,
                                 meta_payload=meta_payload,
                             )
-                            # 如果 query 中没有解析到城市，尝试 LLM 提取
+                            # 如果 query 中没有解析到城市，尝试补全：
+                            # - 当已使用 meta.city（定位城市）时：不额外调用 LLM，避免覆盖定位城市
+                            # - 当没有 meta.city 时：允许用轻量 LLM 从 query 里抽取城市
                             if city_source != "query":
-                                city_from_query, reason = extract_city_from_query(payload.query, self._settings.weather_default_city)
-                                if not city_from_query:
-                                    llm_city = weather_detail_payload.get("location") or ""
-                                    location_prompt = {
-                                        "query": payload.query,
-                                        "fallback_city": llm_city or self._settings.weather_default_city,
-                                    }
-                                    city_from_query = await self._llm_extract_city(location_prompt)
+                                city_from_query, _reason = extract_city_from_query(
+                                    payload.query,
+                                    self._settings.weather_default_city,
+                                )
                                 if city_from_query:
-                                    city_value, _ = normalize_city_name(city_from_query, self._settings.weather_default_city)
+                                    city_value, _ = normalize_city_name(
+                                        city_from_query,
+                                        self._settings.weather_default_city,
+                                    )
                                     city_source = "query"
+                                elif city_source != "meta":
+                                    city_from_query = await self._llm_extract_city(
+                                        {"query": payload.query}
+                                    )
+                                    if city_from_query:
+                                        city_value, _ = normalize_city_name(
+                                            city_from_query,
+                                            self._settings.weather_default_city,
+                                        )
+                                        city_source = "query"
                             weather_detail_payload["location"] = city_value
                             weather_detail_payload["location_source"] = city_source
                             weather_detail_payload["location_confidence"] = max(0.9, float(weather_detail_payload.get("location_confidence") or 0.0)) if city_source == "query" else max(float(weather_detail_payload.get("location_confidence") or 0.0), 0.8)
@@ -1345,20 +1371,54 @@ class CommandService:
             session_id=session_id,
         )
 
-        self._conversation_manager.update_state(
-            session_id=session_id,
-            query=payload.query,
-            response_message=response_message,
-            function_analysis=function_analysis,
-            raw_llm_output=raw_output,
-            user_candidates=context.user_candidates,
-        )
-
         fa_result = (function_analysis.result or "").strip()
         fa_target = (function_analysis.target or "").strip()
-        requires_selection = bool(function_analysis.need_clarify) or (
-            fa_result in REQUIRES_SELECTION_RESULTS and not fa_target
+        selection_candidates = (
+            self._extract_user_candidates(meta_payload, context)
+            if fa_result in REQUIRES_SELECTION_RESULTS
+            else []
         )
+        requires_selection = bool(function_analysis.need_clarify) or (
+            fa_result in REQUIRES_SELECTION_RESULTS and not fa_target and bool(selection_candidates)
+        )
+
+        # 对需要选择用户的功能：优先使用候选用户纠正/补全 target；若仍无法确定则触发二次询问
+        if fa_result in REQUIRES_SELECTION_RESULTS:
+            candidates = selection_candidates
+            if candidates:
+                # 1) 已有 target 但不在候选名单：尝试模糊匹配，否则清空
+                if fa_target and fa_target not in candidates:
+                    matched = self._match_candidate(fa_target, candidates)
+                    if matched:
+                        function_analysis.target = matched
+                        fa_target = matched
+                    else:
+                        function_analysis.target = ""
+                        fa_target = ""
+
+                # 2) 缺少 target：若只有一个候选直接采用；多候选则生成二次询问话术
+                if not fa_target:
+                    if len(candidates) == 1:
+                        function_analysis.target = candidates[0]
+                        fa_target = candidates[0]
+                    elif len(candidates) > 1 and not function_analysis.need_clarify:
+                        function_analysis.need_clarify = True
+                        clarification = await self._generate_structured_reply(
+                            session_id=session_id,
+                            query=payload.query,
+                            function_analysis=function_analysis,
+                            conversation_state=context,
+                            meta=meta_payload,
+                        )
+                        if clarification:
+                            function_analysis.clarify_message = clarification
+                            response_message = clarification
+                        requires_selection = True
+
+                selection_candidates = candidates
+                requires_selection = bool(function_analysis.need_clarify) or (
+                    fa_result in REQUIRES_SELECTION_RESULTS and not fa_target and bool(selection_candidates)
+                )
 
         detail_meta = function_analysis.weather_detail or {}
         location_name = (detail_meta.get("location") or "").strip()
@@ -1383,6 +1443,16 @@ class CommandService:
         trimmed_reply = (response_message or "").strip()
         if not trimmed_reply and function_analysis.need_clarify and function_analysis.clarify_message:
             response_message = function_analysis.clarify_message
+
+        # 记录会话：以最终 response_message/function_analysis 为准
+        self._conversation_manager.update_state(
+            session_id=session_id,
+            query=payload.query,
+            response_message=response_message,
+            function_analysis=function_analysis,
+            raw_llm_output=raw_output,
+            user_candidates=context.user_candidates,
+        )
 
         return CommandResponse(
             code=200,

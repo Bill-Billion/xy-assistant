@@ -860,42 +860,72 @@ class WeatherService:
         return point
 
     async def _geocode(self, location: str) -> Optional[GeoPoint]:
+        """
+        使用 Nominatim 做轻量地理编码。
+
+        说明：
+        - 外部服务偶发超时/限流时，容易导致城市回退到默认坐标。
+        - 这里通过“多候选 query + 更宽松超时”提升成功率；并保持总尝试次数很小，避免拖慢主链路。
+        """
         url = "https://nominatim.openstreetmap.org/search"
-        params = {
-            "format": "json",
-            "limit": 1,
-            "q": location,
-        }
         headers = {
             "User-Agent": "xy-assistant-weather/1.0",
             "Accept": "application/json",
         }
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.get(url, params=params, headers=headers)
-        except httpx.HTTPError as exc:
-            logger.warning("geocode request failed", error=str(exc))
-            return None
 
-        if response.status_code != httpx.codes.OK:
-            logger.warning("geocode http error", status=response.status_code)
-            return None
+        normalized_name = location
+        if normalized_name and not normalized_name.endswith("市") and len(normalized_name) <= 6:
+            normalized_name += "市"
 
-        try:
-            data = response.json()
-        except ValueError:
-            return None
+        query_candidates: list[str] = []
+        location_raw = (location or "").strip()
+        if location_raw:
+            # 优先更精确的写法，减少首次查询超时导致的整体变慢。
+            if not location_raw.endswith("市"):
+                query_candidates.append(f"{location_raw}市")
+            query_candidates.append(location_raw)
+            # 增加“中国”前缀，提升命中概率（尤其是短地名）
+            if not location_raw.startswith("中国"):
+                if not location_raw.endswith("市"):
+                    query_candidates.append(f"中国{location_raw}市")
+                query_candidates.append(f"中国{location_raw}")
 
-        if not data:
-            return None
-        primary = data[0]
-        try:
-            lat = float(primary["lat"])
-            lon = float(primary["lon"])
-        except (KeyError, ValueError, TypeError):
-            return None
-        display_name = primary.get("display_name") or location
-        return GeoPoint(name=location, latitude=lat, longitude=lon)
+        # 单次请求严格控制超时，避免地理编码拖垮整体链路
+        timeout = httpx.Timeout(3.0, connect=2.0)
+        for candidate in query_candidates:
+            params = {
+                "format": "json",
+                "limit": 1,
+                "q": candidate,
+            }
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.get(url, params=params, headers=headers)
+            except httpx.HTTPError as exc:
+                logger.warning("geocode request failed", location=location, candidate=candidate, error=str(exc))
+                continue
+
+            if response.status_code != httpx.codes.OK:
+                logger.warning("geocode http error", location=location, candidate=candidate, status=response.status_code)
+                continue
+
+            try:
+                data = response.json()
+            except ValueError:
+                continue
+
+            if not data:
+                continue
+            primary = data[0]
+            try:
+                lat = float(primary["lat"])
+                lon = float(primary["lon"])
+            except (KeyError, ValueError, TypeError):
+                continue
+            _ = primary.get("display_name")  # 仅用于调试时查看，不影响输出
+            return GeoPoint(name=normalized_name or location, latitude=lat, longitude=lon)
+
+        return None
 
 
 def _parse_daily(body: Dict[str, Any]) -> list[WeatherDaily]:

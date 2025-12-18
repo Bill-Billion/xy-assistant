@@ -160,9 +160,11 @@ def build_reply_prompt() -> str:
 
         规则：
         - 不要修改 function_analysis 中的 result/target/event/status，仅据此描述执行情况。
+        - 若 need_clarify=false 且 target 已给出（或 result 本身无需 target），不要反问用户，直接确认已为其执行/将执行。
         - 若包含 advice 或 safety_notice，请自然融入回复。
         - 若 result 与天气相关且提供 weather_summary/condition，请引用预报并给出贴心提醒（如带伞、防晒、增添衣物）。
         - 若 need_clarify=true，则以友好语气询问用户补充信息。
+        - 若 need_clarify=true 且 meta.user_candidates 存在（列表/逗号分隔字符串），优先围绕“需要为哪位用户执行该功能”发问，可直接列出候选名单，语言自然不要像模板。
         - 输出仅为自然语言一句或两句，不要返回 JSON 或列表。
         """
     ).strip()

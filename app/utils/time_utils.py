@@ -107,6 +107,12 @@ PERSON_NAME_LEADING_TOKENS = [
     "想给",
     "想为",
     "想帮",
+    "我的",
+    "你的",
+    "他的",
+    "她的",
+    "我们",
+    "咱们",
 ]
 
 
@@ -132,6 +138,9 @@ def sanitize_person_name(name: str) -> Optional[str]:
     # 限制长度，避免过长字段
     cleaned = cleaned[:8]
     if cleaned in {"", "我", "你", "他", "她", "它"}:
+        return None
+    # 过滤明显不是人名的泛化词，避免“我的家庭/家人”等误识别为 target
+    if cleaned in {"家庭", "家人", "我家", "我们家", "咱们家", "自己", "本人"}:
         return None
     return cleaned or None
 

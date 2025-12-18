@@ -183,6 +183,7 @@ RESULTS_REQUIRING_USER = {
     "睡眠监测",
     "健康评估",
     "健康画像",
+    "家庭医生",
 }
 
 CHAT_KEYWORDS = {
@@ -960,6 +961,8 @@ class IntentClassifier:
             if current_target in candidates and self._looks_like_name(current_target):
                 conversation_state.last_selected_user = current_target
                 return
+            # 当前 target 不是候选用户（例如“我的家庭/血压测量”），清空以便触发后续覆盖/二次询问
+            function_analysis["target"] = ""
             current_target = ""  # 允许后续覆盖
 
         candidate_name = self._extract_candidate_name(query)
