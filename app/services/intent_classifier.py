@@ -245,7 +245,7 @@ class IntentClassifier:
         try:
             # 汇总对话历史，保证模型理解当前上下文。
             messages = conversation_state.as_messages()
-            reference_message = self._build_reference_message(query, rule_result, meta)
+            reference_message = self._build_reference_message(query, rule_result, meta, conversation_state)
             if reference_message:
                 messages.append({"role": "assistant", "content": reference_message})
             messages.append({"role": "user", "content": query})
@@ -312,10 +312,18 @@ class IntentClassifier:
         query: str,
         rule_result: Optional[RuleResult],
         meta: Dict[str, Any],
+        conversation_state: ConversationState,
     ) -> Optional[str]:
         """将规则提示、时间等参考信息打包成辅助消息提供给大模型。"""
         hints: list[str] = []
         hints.append(f"参考信息（仅供参考，请以实际语义为准）")
+        # 多轮澄清：提供当前轮次，帮助模型在 3 轮内逐步收敛
+        if conversation_state and getattr(conversation_state, "pending_clarification", False):
+            rounds = getattr(conversation_state, "clarify_rounds", 0) or 0
+            hints.append(f"- 澄清轮次：{min(rounds, 3)}/3")
+            last_tip = getattr(conversation_state, "clarify_message", None)
+            if isinstance(last_tip, str) and last_tip.strip():
+                hints.append(f"- 上轮澄清提示：{last_tip.strip()}")
         base_time = now_e8()
         weekday_labels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
         hints.append(

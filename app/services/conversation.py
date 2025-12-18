@@ -23,6 +23,7 @@ class ConversationState:
     history: List[ConversationTurn] = field(default_factory=list)
     pending_clarification: bool = False
     clarify_message: Optional[str] = None
+    clarify_rounds: int = 0
     last_function_analysis: Optional[dict[str, Any]] = None
     raw_llm_output: Optional[str] = None
     user_candidates: List[str] = field(default_factory=list)
@@ -74,6 +75,10 @@ class ConversationManager:
         # pending_clarification 控制下一轮是否需要追问。
         state.pending_clarification = bool(fa_dict.get("need_clarify"))
         state.clarify_message = fa_dict.get("clarify_message")
+        if state.pending_clarification:
+            state.clarify_rounds = min((state.clarify_rounds or 0) + 1, 3)
+        else:
+            state.clarify_rounds = 0
         target = fa_dict.get("target")
         if isinstance(target, str) and target:
             state.last_selected_user = target
