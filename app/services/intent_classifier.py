@@ -324,8 +324,67 @@ class IntentClassifier:
         conversation_state: ConversationState,
     ) -> Optional[str]:
         """将规则提示、时间等参考信息打包成辅助消息提供给大模型。"""
+        def _needs_weather_context(q: str) -> bool:
+            q = (q or "").strip()
+            if not q:
+                return False
+            tokens = [
+                "天气",
+                "下雨",
+                "带伞",
+                "雨具",
+                "降雨",
+                "降温",
+                "气温",
+                "温度",
+                "湿度",
+                "风力",
+                "刮风",
+                "穿什么",
+                "要不要穿",
+                "热",
+                "冷",
+                "闷",
+                "潮",
+                "晒",
+                "体温",
+                "发烧",
+                "发热",
+            ]
+            return any(tok in q for tok in tokens)
+
+        def _needs_time_context(q: str) -> bool:
+            q = (q or "").strip()
+            if not q:
+                return False
+            tokens = [
+                "今天",
+                "明天",
+                "后天",
+                "下周",
+                "周",
+                "星期",
+                "几号",
+                "日期",
+                "农历",
+                "闹钟",
+                "提醒",
+                "几点",
+                "时间",
+                "早上",
+                "下午",
+                "晚上",
+                "凌晨",
+            ]
+            return any(tok in q for tok in tokens)
+
+        need_weather = _needs_weather_context(query) or (
+            rule_result is not None and getattr(rule_result, "intent_code", None) in WEATHER_INTENT_CODES
+        )
+        need_time = _needs_time_context(query)
+
         hints: list[str] = []
-        hints.append(f"参考信息（仅供参考，请以实际语义为准）")
+        hints.append("参考信息（仅供参考，请以实际语义为准）")
         # 多轮澄清：提供当前轮次，帮助模型在 3 轮内逐步收敛
         if conversation_state and getattr(conversation_state, "pending_clarification", False):
             rounds = getattr(conversation_state, "clarify_rounds", 0) or 0
@@ -335,23 +394,26 @@ class IntentClassifier:
                 hints.append(f"- 上轮澄清提示：{last_tip.strip()}")
         base_time = now_e8()
         weekday_labels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-        hints.append(
-            f"- 当前时间（东八区）：{base_time.strftime('%Y-%m-%d %H:%M')}（{weekday_labels[base_time.weekday()]}）"
-        )
-        hints.append(f"- 默认城市：{self._default_city}（若用户未说明地点，请使用此城市）")
-        future_7 = []
-        future_14 = []
-        for offset in range(1, 15):
-            future_day = base_time + timedelta(days=offset)
-            fragment = f"{future_day.strftime('%m-%d')}({weekday_labels[future_day.weekday()]})"
-            if offset <= 7:
-                future_7.append(fragment)
-            else:
-                future_14.append(fragment)
-        if future_7:
-            hints.append(f"- 未来7天：{', '.join(future_7)}")
-        if future_14:
-            hints.append(f"- 8-14天：{', '.join(future_14)}")
+        if need_time or need_weather:
+            hints.append(
+                f"- 当前时间（东八区）：{base_time.strftime('%Y-%m-%d %H:%M')}（{weekday_labels[base_time.weekday()]}）"
+            )
+        if need_weather:
+            hints.append(f"- 默认城市：{self._default_city}（若用户未说明地点，请使用此城市）")
+        if need_time or need_weather:
+            future_7 = []
+            future_14 = []
+            for offset in range(1, 15):
+                future_day = base_time + timedelta(days=offset)
+                fragment = f"{future_day.strftime('%m-%d')}({weekday_labels[future_day.weekday()]})"
+                if offset <= 7:
+                    future_7.append(fragment)
+                else:
+                    future_14.append(fragment)
+            if future_7:
+                hints.append(f"- 未来7天：{', '.join(future_7)}")
+            if future_14:
+                hints.append(f"- 8-14天：{', '.join(future_14)}")
         if rule_result:
             hints.append(f"- 规则候选功能：{rule_result.intent_code.value}")
             if rule_result.result:
@@ -370,14 +432,15 @@ class IntentClassifier:
         if user_list:
             hints.append(f"- 当前候选用户：{', '.join(user_list)}")
         context_meta = meta.get("context") if isinstance(meta, dict) else None
-        if isinstance(context_meta, dict):
+        if need_weather and isinstance(context_meta, dict):
             local_weather = context_meta.get("local_weather")
             if isinstance(local_weather, dict):
                 city = local_weather.get("city") or self._default_city
                 summary = local_weather.get("summary_short") or local_weather.get("summary")
                 if summary:
                     hints.append(f"- 本地天气：{city} {summary}")
-        if meta:
+        # 上下文信息可能包含 local_weather 等噪声，非必要不注入，避免模型“顺手聊天气”
+        if meta and (need_time or need_weather or user_list):
             hints.append(f"- 上下文信息：{json.dumps(meta, ensure_ascii=False)}")
         content = "\n".join(hints)
         return content if len(hints) > 1 else None

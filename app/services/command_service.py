@@ -934,15 +934,19 @@ class CommandService:
         if precip_phrase:
             target_day_phrase_parts.append(precip_phrase)
         target_day_phrase = "、".join(target_day_phrase_parts)
-        summary_short_parts: list[str] = []
-        if current_text:
-            summary_short_parts.append(current_text)
-        if target_day_phrase:
-            summary_short_parts.append(f"今日{target_day_phrase}")
-        summary_short = f"{context.location} " + "；".join(summary_short_parts) if summary_short_parts else summary
+        summary_current = f"{context.location} {current_text}" if current_text else ""
+        summary_forecast = f"今日{target_day_phrase}" if target_day_phrase else ""
+        if summary_current:
+            summary_short = summary_current
+        elif summary_forecast:
+            summary_short = f"{context.location} {summary_forecast}"
+        else:
+            summary_short = summary
         meta = {
             "city": context.location,
-            "summary": summary,
+            "summary": summary_short,
+            "summary_current": summary_current,
+            "summary_forecast": summary_forecast,
             "target_date": context.target_date.isoformat() if context.target_date else now_e8().date().isoformat(),
             "current": current,
             "target_day": target_day,
@@ -954,21 +958,45 @@ class CommandService:
             self._local_weather_cache[cache_key] = meta
         return meta
 
+    def _is_vague_temperature_query(self, query: str) -> bool:
+        """判断是否为主观冷热/闷湿等环境或体感描述。"""
+        q = (query or "").lower()
+        if not q:
+            return False
+        # 明确询问冷热的句式，直接视作体感类问题
+        question_tokens = ["热吗", "冷吗", "热不热", "冷不冷"]
+        if any(tok in q for tok in question_tokens):
+            return True
+        subjective_tokens = ["好", "有点", "有些", "感觉", "觉得", "太", "挺", "特别", "非常"]
+        temp_tokens = ["热", "冷", "闷", "潮", "晒", "湿", "风大", "凉"]
+        has_subjective = any(tok in q for tok in subjective_tokens)
+        has_temp = any(tok in q for tok in temp_tokens)
+        return has_subjective and has_temp
+
     def _should_attach_local_weather(self, query: str) -> bool:
         if not query:
             return False
+        # 体感温度/闷湿类表述：允许注入天气作为分析线索
+        if self._is_vague_temperature_query(query):
+            return True
+        # 明确出现体温/发热等身体温度指标，也可参考当地天气进行综合判断
+        body_temp_tokens = ["体温", "发烧", "发热", "温度高", "温度低"]
+        if any(token in query for token in body_temp_tokens):
+            return True
+        # 明确天气/气温/降雨等环境类问题
         keywords = [
             "天气",
+            "气温",
             "温度",
-            "热",
-            "冷",
-            "降温",
             "下雨",
-            "凉快",
-            "闷",
-            "潮",
-            "风大",
-            "晒",
+            "降雨",
+            "降温",
+            "下雪",
+            "刮风",
+            "空气质量",
+            "雾霾",
+            "紫外线",
+            "湿度",
         ]
         return any(keyword in query for keyword in keywords)
 
@@ -996,12 +1024,19 @@ class CommandService:
         self,
         reply_message: str,
         *,
+        query: str,
         meta_payload: Dict[str, Any],
         function_analysis: FunctionAnalysis,
         rule_source: str,
     ) -> str:
         """在健康/模糊场景下补充当地天气提示，帮助用户理解可能的环境因素。"""
         if rule_source == "rule":
+            return reply_message
+        # 非天气/非体感相关问题不应拼接天气提示，避免“答非所问”。
+        if not self._should_attach_local_weather(query):
+            return reply_message
+        # 体感/模糊指令交由 LLM 自行判断是否引用天气，不再本地强制拼接
+        if self._is_vague_temperature_query(query):
             return reply_message
         context_meta = (meta_payload or {}).get("context") or {}
         local_weather = context_meta.get("local_weather")
@@ -1030,21 +1065,23 @@ class CommandService:
             current_desc.append(f"{now_temp}℃")
         if now_humidity:
             current_desc.append(f"湿度{now_humidity}")
+        # 实况优先：若已有当前实况则不再拼接“今日预报”
         day_desc: list[str] = []
-        day_text = target_day.get("day_text") or target_day.get("night_text")
-        if day_text:
-            day_desc.append(str(day_text))
-        high_temp = target_day.get("high_temp")
-        low_temp = target_day.get("low_temp")
-        if high_temp is not None and low_temp is not None:
-            day_desc.append(f"{low_temp}~{high_temp}℃")
-        elif high_temp is not None:
-            day_desc.append(f"最高{high_temp}℃")
-        elif low_temp is not None:
-            day_desc.append(f"最低{low_temp}℃")
-        precip_probability = target_day.get("precip_probability")
-        if isinstance(precip_probability, (float, int)):
-            day_desc.append(f"降水概率{int(round(precip_probability * 100))}%")
+        if not current_desc:
+            day_text = target_day.get("day_text") or target_day.get("night_text")
+            if day_text:
+                day_desc.append(str(day_text))
+            high_temp = target_day.get("high_temp")
+            low_temp = target_day.get("low_temp")
+            if high_temp is not None and low_temp is not None:
+                day_desc.append(f"{low_temp}~{high_temp}℃")
+            elif high_temp is not None:
+                day_desc.append(f"最高{high_temp}℃")
+            elif low_temp is not None:
+                day_desc.append(f"最低{low_temp}℃")
+            precip_probability = target_day.get("precip_probability")
+            if isinstance(precip_probability, (float, int)):
+                day_desc.append(f"降水概率{int(round(precip_probability * 100))}%")
         hint_segments: list[str] = []
         if current_desc:
             hint_segments.append(f"当前{'、'.join(current_desc)}")
@@ -1060,6 +1097,74 @@ class CommandService:
             trimmed += "。"
         augmented = f"{trimmed} {hint}"
         return augmented.strip()
+
+    def _strip_irrelevant_weather_from_reply(
+        self,
+        reply_message: str,
+        *,
+        query: str,
+        function_analysis: FunctionAnalysis,
+        meta_payload: Dict[str, Any],
+    ) -> str:
+        """
+        对“非天气/非体感”的问题，移除模型/兜底话术中不相关的天气尾巴。
+
+        说明：
+        - 目标是避免出现“数学题/逻辑题/常识题后面硬塞一句天气关怀”的体验问题。
+        - 仅在确认当前问题不需要天气上下文时触发，避免误删真正的天气回答。
+        """
+        text = (reply_message or "").strip()
+        if not text:
+            return reply_message
+        # 若用户明确涉及天气/体感/体温，则允许提天气
+        if self._should_attach_local_weather(query):
+            return reply_message
+        # 若当前已进入天气链路（结构化字段或 summary），则允许提天气
+        if function_analysis.weather_summary or function_analysis.weather_detail:
+            return reply_message
+        # 若 meta 中显式提供 local_weather（例如前端环境感知），但本轮 query 不需要天气，则不应扩展天气闲聊
+        context_meta = (meta_payload or {}).get("context") or {}
+        if isinstance(context_meta, dict) and isinstance(context_meta.get("local_weather"), dict):
+            # 仍然视作“不需要天气”，继续走清理逻辑
+            pass
+
+        weather_tokens = [
+            "天气",
+            "气温",
+            "温度",
+            "湿度",
+            "降水",
+            "风力",
+            "风大",
+            "下雨",
+            "雨具",
+            "带伞",
+            "晴",
+            "多云",
+            "阴",
+            "小雨",
+            "中雨",
+            "大雨",
+            "雷雨",
+            "下雪",
+            "保暖",
+            "添衣",
+            "防晒",
+        ]
+        # 以句号/问号/感叹号分段，剔除包含天气词的段落
+        import re
+
+        segments = re.split(r"(?<=[。！？!?])\\s*", text)
+        kept: list[str] = []
+        for seg in segments:
+            s = (seg or "").strip()
+            if not s:
+                continue
+            if any(tok in s for tok in weather_tokens):
+                continue
+            kept.append(s)
+        cleaned = "".join(kept).strip()
+        return cleaned or reply_message
 
     def _clean_safety_message(
         self,
@@ -1529,9 +1634,16 @@ class CommandService:
         )
         response_message = self._maybe_append_weather_hint(
             response_message,
+            query=payload.query,
             meta_payload=meta_payload,
             function_analysis=function_analysis,
             rule_source=reply_origin,
+        )
+        response_message = self._strip_irrelevant_weather_from_reply(
+            response_message,
+            query=payload.query,
+            function_analysis=function_analysis,
+            meta_payload=meta_payload,
         )
 
         logger.debug(

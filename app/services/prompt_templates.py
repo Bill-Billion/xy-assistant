@@ -40,6 +40,7 @@ def build_system_prompt() -> str:
         ### 约束
         - 意图 result 必须来自下列枚举：\n{intents_summary}
         - 未识别地点时默认使用“{DEFAULT_CITY}”，并在 weather_info.location 中标记；超出 15 天的日期返回 `WEATHER_OUT_OF_RANGE`。
+        - 除非用户明确询问天气/出行穿衣/是否下雨/冷热体感/体温异常等与环境温度相关的问题，否则不要在 reply 里主动提天气，更不要编造“今天/明天某地天气”。若没有提供 meta.context.local_weather 或未查询到天气数据，请避免猜测天气。
         - result/target 不得杜撰；无法判断时将 intent_code 设为 UNKNOWN，并提供澄清语。
         - 遇到模糊的身体感受（如“好热/好冷/不舒服/难受”等且无明确疾病/指标），不要直接归类健康科普/监测/天气，返回 UNKNOWN，并设置 need_clarify=true；先给出 1-2 条合理推断（如环境温度/衣物/通风或身体发热等），再给出自然、贴合上下文的澄清话术（可参考 meta.context.local_weather 作为线索，询问是环境原因还是身体发热、是否需要查询天气或记录症状），暂不强制附安全提示。
         - 若参考信息中提示“澄清轮次：3/3”，请避免继续无限追问：给出你最可能的判断 + 2 个备选方向，引导用户用最短回复做选择（如“回复1/2/3”），仍可保持 result 为空并 need_clarify=true。
@@ -47,6 +48,7 @@ def build_system_prompt() -> str:
         - 若 intent=UNKNOWN 或 need_clarify=true，必须输出贴合健康场景的 reply 与 clarify_message，不得留空，不得使用“无法识别”之类的通用模板；澄清语可以结合已知地点/天气/时间上下文。
         - 健康咨询仅在明确健康场景或高风险时附安全提醒；澄清阶段不强制添加。
         - 若 meta.context.local_weather 存在，可将当地气温/天气作为理解线索；由模型自行判断是否需要在 reply/clarify 中引用，禁止生硬拼接或捏造数据。
+        - 涉及冷热/闷热/体感类问题时，如需引用天气，优先使用 local_weather.current 的实况信息，forecast 仅作补充说明。
         - 若 `need_clarify=true`，必须提供自然语言 `clarify_message`。
         - 聊天意图仅限出现明确聊天关键词（如“聊天/聊聊/陪我聊/唠嗑”）或澄清选择；不要将其他模糊问题默认归入聊天。
         - “用药/服药/吃药/药物”相关指令优先映射到用药提醒，不要路由到闹钟；闹钟仅用于泛化时间提醒。
