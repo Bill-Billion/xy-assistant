@@ -29,12 +29,14 @@ class Settings(BaseSettings):
     weather_default_lat: float = Field(28.22778, alias="WEATHER_DEFAULT_LAT")
     weather_default_lon: float = Field(112.93886, alias="WEATHER_DEFAULT_LON")
     weather_cache_ttl: int = Field(600, alias="WEATHER_CACHE_TTL")
+    weather_realtime_cache_ttl: int = Field(60, alias="WEATHER_REALTIME_CACHE_TTL")
     weather_geo_cache_ttl: int = Field(86400, alias="WEATHER_GEO_CACHE_TTL")
     weather_llm_enabled: bool = Field(True, alias="WEATHER_LLM_ENABLED")
     weather_llm_confidence_threshold: float = Field(0.6, alias="WEATHER_LLM_CONFIDENCE_THRESHOLD")
     weather_llm_low_confidence_threshold: float = Field(0.3, alias="WEATHER_LLM_LOW_CONFIDENCE_THRESHOLD")
     weather_broadcast_llm_enabled: bool = Field(True, alias="WEATHER_BROADCAST_LLM_ENABLED")
     weather_broadcast_max_tokens: int | None = Field(None, alias="WEATHER_BROADCAST_MAX_TOKENS")
+    enable_high_confidence_rules: bool = Field(True, alias="ENABLE_HIGH_CONFIDENCE_RULES")
 
     model_config = SettingsConfigDict(
         env_file=(Path(__file__).resolve().parent.parent.parent / ".env"),

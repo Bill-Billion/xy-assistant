@@ -34,7 +34,7 @@ class WeatherBroadcastGenerator:
     ) -> None:
         self._llm_client = llm_client
         self._enabled = bool(enabled and llm_client)
-        self._cache: TTLCache[Tuple[str, str, str], WeatherBroadcastResult] = TTLCache(
+        self._cache: TTLCache[Tuple[str, str, str, str], WeatherBroadcastResult] = TTLCache(
             maxsize=128,
             ttl=cache_ttl,
         )
@@ -99,14 +99,22 @@ class WeatherBroadcastGenerator:
         weather_context: "WeatherContext",
         analysis: FunctionAnalysis,
         user_query: str,
-    ) -> Tuple[str, str, str]:
+    ) -> Tuple[str, str, str, str]:
         location = weather_context.location or ""
         date_key = weather_context.target_date.isoformat() if weather_context.target_date else "NA"
         condition_key = (
             f"{analysis.weather_condition}|{analysis.weather_judgement}|{analysis.weather_evidence}"
         )
         query_key = user_query.strip()
-        return (location + "::" + date_key, condition_key, query_key)
+        current = weather_context.current or {}
+        temp = str(current.get("temperature") or "")
+        weather = str(current.get("weather") or "")
+        humidity = str(current.get("sd") or "")
+        target_day = (weather_context.derived_flags or {}).get("target_day") or {}
+        low_temp = str(target_day.get("low_temp") or "")
+        high_temp = str(target_day.get("high_temp") or "")
+        fingerprint = f"{weather}|{temp}|{humidity}|{low_temp}~{high_temp}"
+        return (location + "::" + date_key, condition_key, query_key, fingerprint)
 
     def _build_payload(
         self,

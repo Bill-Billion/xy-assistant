@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 from datetime import datetime, date, timedelta
 from difflib import SequenceMatcher
 from time import perf_counter
-from typing import Iterable, Optional, Dict, Any, List
+from typing import AsyncIterator, Iterable, Optional, Dict, Any, List
 
 from cachetools import TTLCache
 
@@ -36,6 +37,7 @@ from app.utils.time_utils import (
     resolve_lunar_to_solar,
     sanitize_person_name,
 )
+from app.schemas.sse_events import sse_meta_event, sse_msg_delta_event, sse_done_event, sse_error_event
 from app.utils.location_utils import extract_city_from_query, normalize_city_name
 
 
@@ -82,6 +84,25 @@ _NUMERAL_TOKENS = {
     "零",
     "〇",
 }
+
+
+@dataclass
+class PipelineResult:
+    """分类管线中间结果，用于在流式/非流式路径间共享状态。"""
+    session_id: str
+    function_analysis: FunctionAnalysis
+    reply_message: str
+    raw_output: str
+    rule_match: Any  # Optional[RuleMatch]
+    weather_context: Any  # Optional[WeatherContext]
+    conversation_state: Any  # ConversationState
+    meta_payload: Dict[str, Any]
+    rule_source: str
+    overall_start: float
+    # 流式回复生成标记
+    weather_reply_summary: str = ""
+    weather_reply_data: Dict[str, Any] = field(default_factory=dict)
+    needs_structured_reply: bool = False
 
 
 def _format_target_phrase(target_date: Optional[str]) -> str:
@@ -196,6 +217,12 @@ def _render_template(function_analysis: FunctionAnalysis) -> str | None:
             message += f" 频次：{function_analysis.status}。"
         return message.strip()
 
+    if result == "取消闹钟":
+        if function_analysis.target:
+            readable_target = describe_alarm_target(function_analysis.target or "", now_e8())
+            return f"好的，正在为您取消{readable_target}的闹钟。"
+        return "您想取消哪一个闹钟？"
+
     if result == "关闭音乐":
         return "好的，正在关闭音乐。"
 
@@ -249,7 +276,7 @@ def _render_template(function_analysis: FunctionAnalysis) -> str | None:
         summary = format_lunar_summary(lunar)
         label = (function_analysis.time_text or "当前日期").strip()
         date_text = target_dt.strftime("%Y年%m月%d日")
-        # 若用户询问的是“农历X月X是什么时候”，优先播报其对应公历日期
+        # 若用户询问的是"农历X月X是什么时候"，优先播报其对应公历日期
         if "农历" in label:
             return f"{label}对应的公历日期是{date_text}。"
         if summary:
@@ -275,6 +302,9 @@ def _render_template(function_analysis: FunctionAnalysis) -> str | None:
             return f"好的，我已为{function_analysis.target}打开{result}功能。"
         return f"好的，我已为您打开{result}功能。"
 
+    if result == "健康科普":
+        return "好的，我已为您打开健康科普。"
+
     if result == "家庭医生":
         if function_analysis.target:
             return f"好的，我已为{function_analysis.target}打开家庭医生服务。"
@@ -285,8 +315,34 @@ def _render_template(function_analysis: FunctionAnalysis) -> str | None:
             return f"好的，我已为{function_analysis.target}打开小雅医生功能。"
         return "好的，我已为您打开小雅医生功能。"
 
+    if result in {"声音调高", "声音调低", "亮度调高", "亮度调低"}:
+        target = (function_analysis.target or "").strip()
+        subject = "音量" if result.startswith("声音") else "亮度"
+        if not target:
+            return f"好的，正在为您调整{subject}。"
+        if target.startswith(("+", "-")):
+            sign = target[:1]
+            amount = target[1:] or "10"
+            verb = "调高" if sign == "+" else "调低"
+            return f"好的，已为您将{subject}{verb}{amount}%。"
+        return f"好的，已为您将{subject}设置为{target}。"
+
     if result == "息屏":
         return "好的，正在为您息屏。"
+
+    if result == "用药计划":
+        if function_analysis.target and function_analysis.parsed_time:
+            return f"好的，我已为您添加{function_analysis.target}的用药计划。"
+        return "好的，我已为您打开用药计划。"
+
+    if result == "小雅预约":
+        return "好的，我已为您打开小雅预约。"
+
+    if result == "小雅电影":
+        return "好的，我已为您打开小雅电影。"
+
+    if result == "娱乐管家":
+        return "好的，我已为您打开娱乐管家。"
 
     return None
 
@@ -294,7 +350,7 @@ def _render_template(function_analysis: FunctionAnalysis) -> str | None:
 def _compose_response_message(function_analysis: FunctionAnalysis, fallback: str) -> str:
     """
     根据分析结果动态拼接返回给前端的 msg。
-    可执行意图优先使用模板，咨询类按“建议→安全提示→澄清”组合。
+    可执行意图优先使用模板，咨询类按"建议→安全提示→澄清"组合。
     """
     parts: list[str] = []
 
@@ -357,7 +413,12 @@ class CommandService:
         self._settings = settings
         self._weather_service = weather_service
         self._weather_broadcast_generator = weather_broadcast_generator
-        self._rule_engine = rule_engine or HighConfidenceRuleEngine(settings.weather_default_city)
+        if rule_engine is not None:
+            self._rule_engine = rule_engine
+        elif getattr(settings, "enable_high_confidence_rules", False):
+            self._rule_engine = HighConfidenceRuleEngine(settings.weather_default_city)
+        else:
+            self._rule_engine = None
         self._reply_llm_client = reply_llm_client
         self._reply_prompt = build_reply_prompt() if reply_llm_client else None
         self._selection_prompt = build_user_selection_prompt() if reply_llm_client else None
@@ -563,6 +624,48 @@ class CommandService:
             user_query=user_query,
         )
 
+    def _build_weather_reply_data(
+        self,
+        weather_context: "WeatherContext",
+        function_analysis: FunctionAnalysis,
+        query: str,
+    ) -> Dict[str, Any]:
+        """从天气上下文构建直接传给 reply LLM 的数据，跳过 broadcast 中间层。"""
+        derived = weather_context.derived_flags or {}
+        target_day = derived.get("target_day", {})
+        current = derived.get("current", {})
+
+        data: Dict[str, Any] = {
+            "query": query,
+            "location": weather_context.location or "",
+            "target_date": weather_context.target_date.isoformat() if weather_context.target_date else "",
+            "target_date_text": (function_analysis.weather_detail or {}).get("target_date_text", ""),
+        }
+        if current:
+            data["current"] = {
+                "weather": current.get("weather", ""),
+                "temperature": current.get("temperature"),
+                "humidity": current.get("humidity"),
+                "wind_direction": current.get("wind_direction", ""),
+                "wind_power": current.get("wind_power", ""),
+                "aqi": current.get("aqi", ""),
+            }
+        if target_day:
+            data["forecast"] = {
+                "day_text": target_day.get("day_text", ""),
+                "night_text": target_day.get("night_text", ""),
+                "high_temp": target_day.get("high_temp"),
+                "low_temp": target_day.get("low_temp"),
+                "precip_probability": target_day.get("precip_probability"),
+                "has_rain": target_day.get("has_rain", False),
+                "wind": target_day.get("wind", ""),
+            }
+        if function_analysis.weather_condition:
+            data["weather_condition"] = function_analysis.weather_condition
+        if function_analysis.weather_judgement:
+            data["weather_judgement"] = function_analysis.weather_judgement
+        return data
+
     async def _generate_weather_reply_text(
         self,
         *,
@@ -572,12 +675,17 @@ class CommandService:
     ) -> str:
         if not self._reply_llm_client or not self._weather_reply_prompt:
             return summary
-        prompt_payload = {
-            "query": query,
-            "summary": summary,
-            "detail": detail or {},
-        }
-        user_message = json.dumps(prompt_payload, ensure_ascii=False)
+        # 新路径：直接用天气数据（包含 location/forecast 等结构化字段）
+        if detail and detail.get("location"):
+            user_message = json.dumps(detail, ensure_ascii=False)
+        else:
+            # 兼容旧路径
+            prompt_payload = {
+                "query": query,
+                "summary": summary,
+                "detail": detail or {},
+            }
+            user_message = json.dumps(prompt_payload, ensure_ascii=False)
         try:
             raw_text, _ = await self._reply_llm_client.chat(
                 system_prompt=self._weather_reply_prompt,
@@ -638,7 +746,7 @@ class CommandService:
     ) -> Dict[str, Any]:
         """
         使用 LLM 判断农历查询策略（未来最近一次 / 今年 / 需要澄清 / 年份偏移）。
-        仅用于“农历X月X”这类需要转换为公历的场景，提示词尽量短以控制时延。
+        仅用于"农历X月X"这类需要转换为公历的场景，提示词尽量短以控制时延。
         """
         default_decision: Dict[str, Any] = {
             "strategy": "next_occurrence",
@@ -715,7 +823,7 @@ class CommandService:
         function_analysis: FunctionAnalysis,
     ) -> Optional[str]:
         """
-        对“农历X月X是什么时候”这类询问：
+        对"农历X月X是什么时候"这类询问：
         - 先用 LLM 判定策略（未来最近一次/今年/需澄清）
         - 再用 lunar_python 做确定性转换，写入 target/parsed_time/time_text
         - 返回用于 msg 的文本（优先使用模板），若无需处理则返回 None
@@ -988,6 +1096,9 @@ class CommandService:
             "天气",
             "气温",
             "温度",
+            "几度",
+            "多少度",
+            "℃",
             "下雨",
             "降雨",
             "降温",
@@ -1032,7 +1143,7 @@ class CommandService:
         """在健康/模糊场景下补充当地天气提示，帮助用户理解可能的环境因素。"""
         if rule_source == "rule":
             return reply_message
-        # 非天气/非体感相关问题不应拼接天气提示，避免“答非所问”。
+        # 非天气/非体感相关问题不应拼接天气提示，避免"答非所问"。
         if not self._should_attach_local_weather(query):
             return reply_message
         # 体感/模糊指令交由 LLM 自行判断是否引用天气，不再本地强制拼接
@@ -1065,7 +1176,7 @@ class CommandService:
             current_desc.append(f"{now_temp}℃")
         if now_humidity:
             current_desc.append(f"湿度{now_humidity}")
-        # 实况优先：若已有当前实况则不再拼接“今日预报”
+        # 实况优先：若已有当前实况则不再拼接"今日预报"
         day_desc: list[str] = []
         if not current_desc:
             day_text = target_day.get("day_text") or target_day.get("night_text")
@@ -1107,10 +1218,10 @@ class CommandService:
         meta_payload: Dict[str, Any],
     ) -> str:
         """
-        对“非天气/非体感”的问题，移除模型/兜底话术中不相关的天气尾巴。
+        对"非天气/非体感"的问题，移除模型/兜底话术中不相关的天气尾巴。
 
         说明：
-        - 目标是避免出现“数学题/逻辑题/常识题后面硬塞一句天气关怀”的体验问题。
+        - 目标是避免出现"数学题/逻辑题/常识题后面硬塞一句天气关怀"的体验问题。
         - 仅在确认当前问题不需要天气上下文时触发，避免误删真正的天气回答。
         """
         text = (reply_message or "").strip()
@@ -1125,7 +1236,7 @@ class CommandService:
         # 若 meta 中显式提供 local_weather（例如前端环境感知），但本轮 query 不需要天气，则不应扩展天气闲聊
         context_meta = (meta_payload or {}).get("context") or {}
         if isinstance(context_meta, dict) and isinstance(context_meta.get("local_weather"), dict):
-            # 仍然视作“不需要天气”，继续走清理逻辑
+            # 仍然视作"不需要天气"，继续走清理逻辑
             pass
 
         weather_tokens = [
@@ -1270,9 +1381,11 @@ class CommandService:
             logger.warning("short reply generation failed", error=str(exc), session_id=session_id)
             return ""
 
-    async def handle_command(self, payload: CommandRequest) -> CommandResponse:
+    def _prepare_session(
+        self, payload: CommandRequest,
+    ) -> tuple[str, ConversationState, Dict[str, Any]]:
+        """初始化会话：提取 session_id、上下文、meta 信息。"""
         session_id = payload.session_id or self._conversation_manager.generate_session_id()
-        # 提取会话上下文，便于构造多轮提示词。
         context = self._conversation_manager.get_state(session_id)
 
         candidate_users: list[str] = []
@@ -1286,7 +1399,6 @@ class CommandService:
                 context.user_candidates = candidate_users
                 self._conversation_manager.set_user_candidates(session_id, candidate_users)
 
-        # 组装 meta 信息，同时注入候选联系人，便于后续意图解析精准匹配。
         meta_payload = dict(payload.meta or {})
         if getattr(payload, "city", None):
             meta_payload["city"] = payload.city
@@ -1302,130 +1414,134 @@ class CommandService:
             meta=payload.meta,
         )
 
-        selection_response = await self._handle_user_selection(
-            session_id=session_id,
-            query=payload.query,
-            meta_payload=meta_payload,
-            conversation_state=context,
-        )
-        if selection_response:
-            return selection_response
+        return session_id, context, meta_payload
 
+    async def _run_classification_pipeline(
+        self,
+        *,
+        payload: CommandRequest,
+        session_id: str,
+        context: ConversationState,
+        meta_payload: Dict[str, Any],
+    ) -> PipelineResult:
+        """分类管线：规则匹配 / 意图分类 / 天气拉取与广播。不含最终回复生成。"""
         overall_start = perf_counter()
+
         rule_match: RuleMatch | None = None
         if self._rule_engine:
             rule_match = self._rule_engine.evaluate(payload.query, meta_payload)
 
-        try:
-            if rule_match:
-                rule_source = "rule"
-                function_analysis = rule_match.analysis
-                reply_message = ""
-                raw_output = ""
-                weather_context = None
-                weather_detail_payload = rule_match.weather_detail or {}
-                weather_needs_realtime = rule_match.needs_realtime_weather
-                if weather_detail_payload:
-                    function_analysis.weather_detail = dict(weather_detail_payload)
-            else:
-                if self._should_attach_local_weather(payload.query):
-                    await self._ensure_local_weather_meta(meta_payload)
-                classify_start = perf_counter()
-                # 核心步骤：调用意图分类器，结合大模型与规则得到结构化分析。
-                classification = await self._intent_classifier.classify(
-                    session_id=session_id,
-                    query=payload.query,
-                    meta=meta_payload,
-                    conversation_state=context,
-                )
-                logger.debug(
-                    "timing handle_command",
-                    step="intent_classifier",
-                    duration=round(perf_counter() - classify_start, 3),
-                    session_id=session_id,
-                )
-                # 将原始结果转为响应模型，确保字段类型一致。
-                function_analysis = FunctionAnalysis.model_validate(classification.function_analysis)
-                reply_message = classification.reply_message
-                raw_output = classification.raw_llm_output
-                weather_context = None
-                weather_detail_payload = function_analysis.weather_detail or {}
-                weather_needs_realtime = getattr(function_analysis, "weather_needs_realtime", None)
-                rule_source = "llm"
-                # 闹钟过时检测：若解析时间已早于当前时间，则提示澄清，不返回过期时间
-                if function_analysis.result in {"新增闹钟"} and function_analysis.parsed_time:
-                    try:
-                        parsed_dt = datetime.fromisoformat(function_analysis.parsed_time)
-                        if parsed_dt.tzinfo is None:
-                            parsed_dt = parsed_dt.replace(tzinfo=EAST_EIGHT)
-                        now_ts = now_e8()
-                        if parsed_dt <= now_ts:
-                            function_analysis.parsed_time = None
-                            function_analysis.target = ""
-                            function_analysis.need_clarify = True
-                            # 交由 LLM 生成澄清话术，避免本地固定模板
-                            reply_message = function_analysis.clarify_message or reply_message
-                    except Exception:
-                        pass
-                if not (meta_payload.get("context") or {}).get("local_weather"):
-                    if (
-                        weather_detail_payload
-                        or ("天气" in (function_analysis.result or ""))
-                        or (function_analysis.need_clarify and self._should_attach_local_weather(payload.query))
-                    ):
-                        await self._ensure_local_weather_meta(meta_payload)
+        if rule_match:
+            rule_source = "rule"
+            function_analysis = rule_match.analysis
+            reply_message = ""
+            raw_output = ""
+            weather_context = None
+            weather_detail_payload = rule_match.weather_detail or {}
+            weather_needs_realtime = rule_match.needs_realtime_weather
+            if weather_detail_payload:
+                function_analysis.weather_detail = dict(weather_detail_payload)
+        else:
+            if self._should_attach_local_weather(payload.query):
+                await self._ensure_local_weather_meta(meta_payload)
 
-            # 农历转公历：对“农历X月X是什么时候”类查询，使用 LLM 判定策略，再用 lunar_python 确定性转换并填充 target/msg
-            lunar_reply = await self._maybe_resolve_lunar_calendar(
+            classify_start = perf_counter()
+            classification = await self._intent_classifier.classify(
                 session_id=session_id,
                 query=payload.query,
-                function_analysis=function_analysis,
+                meta=meta_payload,
+                conversation_state=context,
             )
-            if lunar_reply:
-                # 对农历→公历转换类问题，优先使用确定性播报，避免主 LLM 话术掺入无关内容造成不一致
-                reply_message = lunar_reply
+            logger.debug(
+                "timing handle_command",
+                step="intent_classifier",
+                duration=round(perf_counter() - classify_start, 3),
+                session_id=session_id,
+            )
 
-            if (
-                self._weather_service
-                and self._weather_service.enabled
-            ):
-                # 若已有细节按细节走；若为空但结果/summary 显示天气需求，则用 meta/query 城市兜底构造最小 detail 以触发拉取
-                if not weather_detail_payload and (
-                    ("天气" in (function_analysis.result or ""))
-                    or function_analysis.weather_summary
+            function_analysis = FunctionAnalysis.model_validate(classification.function_analysis)
+            reply_message = classification.reply_message
+            raw_output = classification.raw_llm_output
+            weather_context = None
+            weather_detail_payload = function_analysis.weather_detail or {}
+            weather_needs_realtime = getattr(function_analysis, "weather_needs_realtime", None)
+            rule_source = "llm"
+            if function_analysis.result in {"新增闹钟"} and function_analysis.parsed_time:
+                try:
+                    parsed_dt = datetime.fromisoformat(function_analysis.parsed_time)
+                    if parsed_dt.tzinfo is None:
+                        parsed_dt = parsed_dt.replace(tzinfo=EAST_EIGHT)
+                    now_ts = now_e8()
+                    if parsed_dt <= now_ts:
+                        function_analysis.parsed_time = None
+                        function_analysis.target = ""
+                        function_analysis.need_clarify = True
+                        reply_message = function_analysis.clarify_message or reply_message
+                except Exception:
+                    pass
+            if not (meta_payload.get("context") or {}).get("local_weather"):
+                if (
+                    weather_detail_payload
+                    or ("天气" in (function_analysis.result or ""))
+                    or (function_analysis.need_clarify and self._should_attach_local_weather(payload.query))
                 ):
-                    city_value, city_source = self._decide_weather_city(
-                        query=payload.query,
-                        weather_detail_payload={"location": ""},
-                        meta_payload=meta_payload,
-                    )
-                    weather_detail_payload = {
-                        "location": city_value,
-                        "location_source": city_source,
-                        "location_confidence": 0.9 if city_source != "default" else 0.6,
-                        "target_date": function_analysis.parsed_time,
-                        "target_date_text": function_analysis.time_text,
-                    }
-                if not weather_detail_payload:
-                    weather_context = None
-                else:
-                    weather_fetch_start = perf_counter()
-                    used_query_city = False
-                    try:
-                        if weather_detail_payload:
-                            # 按优先级决策城市：query > meta.city > default
-                            city_value, city_source = self._decide_weather_city(
-                                query=payload.query,
-                                weather_detail_payload=weather_detail_payload,
-                                meta_payload=meta_payload,
+                    await self._ensure_local_weather_meta(meta_payload)
+
+        # 农历转公历
+        lunar_reply = await self._maybe_resolve_lunar_calendar(
+            session_id=session_id,
+            query=payload.query,
+            function_analysis=function_analysis,
+        )
+        if lunar_reply:
+            reply_message = lunar_reply
+
+        used_query_city = False
+        if (
+            self._weather_service
+            and self._weather_service.enabled
+        ):
+            if not weather_detail_payload and (
+                ("天气" in (function_analysis.result or ""))
+                or function_analysis.weather_summary
+            ):
+                city_value, city_source = self._decide_weather_city(
+                    query=payload.query,
+                    weather_detail_payload={"location": ""},
+                    meta_payload=meta_payload,
+                )
+                weather_detail_payload = {
+                    "location": city_value,
+                    "location_source": city_source,
+                    "location_confidence": 0.9 if city_source != "default" else 0.6,
+                    "target_date": function_analysis.parsed_time,
+                    "target_date_text": function_analysis.time_text,
+                }
+            if not weather_detail_payload:
+                weather_context = None
+            else:
+                weather_fetch_start = perf_counter()
+                try:
+                    if weather_detail_payload:
+                        city_value, city_source = self._decide_weather_city(
+                            query=payload.query,
+                            weather_detail_payload=weather_detail_payload,
+                            meta_payload=meta_payload,
+                        )
+                        if city_source != "query":
+                            city_from_query, _reason = extract_city_from_query(
+                                payload.query,
+                                self._settings.weather_default_city,
                             )
-                            # 如果 query 中没有解析到城市，尝试补全：
-                            # - 当已使用 meta.city（定位城市）时：不额外调用 LLM，避免覆盖定位城市
-                            # - 当没有 meta.city 时：允许用轻量 LLM 从 query 里抽取城市
-                            if city_source != "query":
-                                city_from_query, _reason = extract_city_from_query(
-                                    payload.query,
+                            if city_from_query:
+                                city_value, _ = normalize_city_name(
+                                    city_from_query,
                                     self._settings.weather_default_city,
+                                )
+                                city_source = "query"
+                            elif city_source not in ("meta", "rule"):
+                                city_from_query = await self._llm_extract_city(
+                                    {"query": payload.query}
                                 )
                                 if city_from_query:
                                     city_value, _ = normalize_city_name(
@@ -1433,170 +1549,151 @@ class CommandService:
                                         self._settings.weather_default_city,
                                     )
                                     city_source = "query"
-                                elif city_source != "meta":
-                                    city_from_query = await self._llm_extract_city(
-                                        {"query": payload.query}
-                                    )
-                                    if city_from_query:
-                                        city_value, _ = normalize_city_name(
-                                            city_from_query,
-                                            self._settings.weather_default_city,
-                                        )
-                                        city_source = "query"
-                            weather_detail_payload["location"] = city_value
-                            weather_detail_payload["location_source"] = city_source
-                            weather_detail_payload["location_confidence"] = max(0.9, float(weather_detail_payload.get("location_confidence") or 0.0)) if city_source == "query" else max(float(weather_detail_payload.get("location_confidence") or 0.0), 0.8)
-                            used_query_city = city_source == "query"
-                        weather_context = await self._weather_service.fetch(
-                            llm_info=weather_detail_payload,
-                            summary=function_analysis.weather_summary,
-                            needs_realtime=bool(weather_needs_realtime),
-                            query=payload.query,
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning("weather context fetch failed", error=str(exc))
-                        weather_context = None
-                    else:
-                        logger.debug(
-                            "timing handle_command",
-                            step="weather_fetch",
-                            duration=round(perf_counter() - weather_fetch_start, 3),
-                            session_id=session_id,
-                        )
-
-            if weather_context:
-                base_summary = weather_context.summary
-                function_analysis.weather_summary = function_analysis.weather_summary or base_summary
-                context_detail = weather_context.to_function_detail()
-                merged_detail = {**weather_detail_payload, **context_detail}
-                merged_detail.setdefault("needs_realtime_data", bool(weather_detail_payload.get("needs_realtime_data")))
-                if used_query_city:
-                    merged_detail["location_source"] = "query"
-                function_analysis.weather_detail = merged_detail
-                meta_payload["weather"] = weather_context.to_prompt_dict()
-
-                broadcast_start = perf_counter()
-                broadcast_result = await self._generate_weather_broadcast(
-                    weather_context=weather_context,
-                    analysis=function_analysis,
-                    user_query=payload.query,
-                )
-                logger.debug(
-                    "timing handle_command",
-                    step="weather_broadcast",
-                    duration=round(perf_counter() - broadcast_start, 3),
-                    session_id=session_id,
-                )
-                if broadcast_result.metadata:
-                    weather_context.llm_metadata.setdefault("broadcast", broadcast_result.metadata)
-                if broadcast_result.message:
-                    function_analysis.weather_summary = broadcast_result.message
-                    existing_conf = function_analysis.weather_confidence or 0.0
-                    function_analysis.weather_confidence = max(
-                        existing_conf,
-                        max(0.0, min(broadcast_result.confidence, 1.0)),
-                    )
-
-                judgement, evidence = _evaluate_weather_condition(
-                    getattr(function_analysis, "weather_condition", None),
-                    weather_context,
-                )
-                if evidence:
-                    function_analysis.weather_evidence = evidence
-                if judgement:
-                    function_analysis.weather_judgement = judgement
-                    try:
-                        current_conf = float(function_analysis.weather_confidence or 0)
-                    except (TypeError, ValueError):
-                        current_conf = 0.0
-                    if current_conf < 0.9:
-                        function_analysis.weather_confidence = 0.9
-                detail_meta = function_analysis.weather_detail or {}
-                source_notes: list[str] = []
-                loc_source = detail_meta.get("location_source")
-                if loc_source == "default":
-                    source_notes.append("未识别具体地名，使用默认城市。")
-                elif loc_source == "llm":
-                    source_notes.append("地名来源于模型解析。")
-                elif loc_source == "llm_low":
-                    source_notes.append("地名为模型推测结果，请留意是否准确。")
-                date_source = detail_meta.get("target_date_source")
-                if date_source == "llm":
-                    source_notes.append("日期参考模型解析。")
-                elif date_source == "default" and not weather_context.target_date:
-                    source_notes.append("未解析到具体日期。")
-                if source_notes:
-                    if function_analysis.reasoning:
-                        function_analysis.reasoning += "；" + "；".join(source_notes)
-                    else:
-                        function_analysis.reasoning = "；".join(source_notes)
-
-                if function_analysis.weather_summary:
-                    reply_message = await self._generate_weather_reply_text(
-                        query=payload.query,
+                        weather_detail_payload["location"] = city_value
+                        weather_detail_payload["location_source"] = city_source
+                        weather_detail_payload["location_confidence"] = max(0.9, float(weather_detail_payload.get("location_confidence") or 0.0)) if city_source == "query" else max(float(weather_detail_payload.get("location_confidence") or 0.0), 0.8)
+                        used_query_city = city_source == "query"
+                    weather_context = await self._weather_service.fetch(
+                        llm_info=weather_detail_payload,
                         summary=function_analysis.weather_summary,
-                        detail=None,
-                    )
-                elif base_summary:
-                    reply_message = await self._generate_weather_reply_text(
+                        needs_realtime=bool(weather_needs_realtime),
                         query=payload.query,
-                        summary=base_summary,
-                        detail=None,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("weather context fetch failed", error=str(exc))
+                    weather_context = None
+                else:
+                    logger.debug(
+                        "timing handle_command",
+                        step="weather_fetch",
+                        duration=round(perf_counter() - weather_fetch_start, 3),
+                        session_id=session_id,
                     )
 
-            if rule_match and not reply_message:
-                reply_message = await self._generate_structured_reply(
-                    session_id=session_id,
-                    query=payload.query,
-                    function_analysis=function_analysis,
-                    conversation_state=context,
-                    meta=meta_payload,
-                )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("classification failed, using fallback", error=str(exc))
-            function_analysis = FunctionAnalysis(
-                result="未知指令",
-                target="",
-                event=None,
-                status=None,
-                confidence=0.0,
-                need_clarify=True,
-                clarify_message="我暂时无法理解您的需求，可以换种说法吗？",
-                reasoning="遭遇异常，使用兜底策略",
+
+        weather_reply_summary = ""
+        weather_reply_data: Dict[str, Any] = {}
+        if weather_context:
+            base_summary = weather_context.summary
+            function_analysis.weather_summary = function_analysis.weather_summary or base_summary
+            context_detail = weather_context.to_function_detail()
+            merged_detail = {**weather_detail_payload, **context_detail}
+            merged_detail.setdefault("needs_realtime_data", bool(weather_detail_payload.get("needs_realtime_data")))
+            if used_query_city:
+                merged_detail["location_source"] = "query"
+            function_analysis.weather_detail = merged_detail
+            meta_payload["weather"] = weather_context.to_prompt_dict()
+
+            # 跳过 broadcast LLM，直接构建天气回复数据
+            weather_reply_data = self._build_weather_reply_data(
+                weather_context=weather_context,
+                function_analysis=function_analysis,
+                query=payload.query,
             )
-            reply_message = function_analysis.clarify_message or "请再描述一次您的需求。"
-            raw_output = ""
-            if weather_context and "天气" in (function_analysis.result or ""):
-                function_analysis.weather_summary = weather_context.summary
-                function_analysis.weather_detail = weather_context.to_function_detail()
-                judgement, evidence = _evaluate_weather_condition(
-                    getattr(function_analysis, "weather_condition", None),
-                    weather_context,
-                )
-                if evidence:
-                    function_analysis.weather_evidence = evidence
-                if judgement:
-                    function_analysis.weather_judgement = judgement
+
+            judgement, evidence = _evaluate_weather_condition(
+                getattr(function_analysis, "weather_condition", None),
+                weather_context,
+            )
+            if evidence:
+                function_analysis.weather_evidence = evidence
+            if judgement:
+                function_analysis.weather_judgement = judgement
+                try:
+                    current_conf = float(function_analysis.weather_confidence or 0)
+                except (TypeError, ValueError):
+                    current_conf = 0.0
+                if current_conf < 0.9:
                     function_analysis.weather_confidence = 0.9
-                detail_meta = function_analysis.weather_detail or {}
-                source_notes: list[str] = []
-                loc_source = detail_meta.get("location_source")
-                if loc_source == "default":
-                    source_notes.append("未识别具体地名，使用默认城市。")
-                elif loc_source == "llm":
-                    source_notes.append("地名来源于模型解析。")
-                elif loc_source == "llm_low":
-                    source_notes.append("地名为模型推测结果，请留意是否准确。")
-                date_source = detail_meta.get("target_date_source")
-                if date_source == "llm":
-                    source_notes.append("日期参考模型解析。")
-                elif date_source == "default" and not weather_context.target_date:
-                    source_notes.append("未解析到具体日期。")
-                if source_notes:
-                    if function_analysis.reasoning:
-                        function_analysis.reasoning += "；" + "；".join(source_notes)
-                    else:
-                        function_analysis.reasoning = "；".join(source_notes)
+            detail_meta = function_analysis.weather_detail or {}
+            source_notes: list[str] = []
+            loc_source = detail_meta.get("location_source")
+            if loc_source == "default":
+                source_notes.append("未识别具体地名，使用默认城市。")
+            elif loc_source == "llm":
+                source_notes.append("地名来源于模型解析。")
+            elif loc_source == "llm_low":
+                source_notes.append("地名为模型推测结果，请留意是否准确。")
+            date_source = detail_meta.get("target_date_source")
+            if date_source == "llm":
+                source_notes.append("日期参考模型解析。")
+            elif date_source == "default" and not weather_context.target_date:
+                source_notes.append("未解析到具体日期。")
+            if source_notes:
+                if function_analysis.reasoning:
+                    function_analysis.reasoning += "；" + "；".join(source_notes)
+                else:
+                    function_analysis.reasoning = "；".join(source_notes)
+
+            # 记录用于回复生成的天气摘要（作为 fallback）
+            weather_reply_summary = function_analysis.weather_summary or base_summary or ""
+
+        needs_structured_reply = bool(rule_match and not reply_message and not weather_reply_data and not weather_reply_summary)
+
+        return PipelineResult(
+            session_id=session_id,
+            function_analysis=function_analysis,
+            reply_message=reply_message,
+            raw_output=raw_output,
+            rule_match=rule_match,
+            weather_context=weather_context,
+            conversation_state=context,
+            meta_payload=meta_payload,
+            rule_source=rule_source,
+            overall_start=overall_start,
+            weather_reply_summary=weather_reply_summary,
+            weather_reply_data=weather_reply_data,
+            needs_structured_reply=needs_structured_reply,
+        )
+
+    async def _generate_reply_message(
+        self,
+        pipeline: PipelineResult,
+        payload: CommandRequest,
+    ) -> str:
+        """根据管线结果生成最终回复文本（非流式）。"""
+        reply_message = pipeline.reply_message
+
+        # 新路径：直接基于天气原始数据生成回复
+        if pipeline.weather_reply_data and self._reply_llm_client and self._weather_reply_prompt:
+            reply_message = await self._generate_weather_reply_text(
+                query=payload.query,
+                summary="",
+                detail=pipeline.weather_reply_data,
+            )
+
+        # 旧路径 fallback：基于天气摘要生成回复
+        elif pipeline.weather_reply_summary:
+            reply_message = await self._generate_weather_reply_text(
+                query=payload.query,
+                summary=pipeline.weather_reply_summary,
+                detail=None,
+            )
+
+        if pipeline.needs_structured_reply:
+            reply_message = await self._generate_structured_reply(
+                session_id=pipeline.session_id,
+                query=payload.query,
+                function_analysis=pipeline.function_analysis,
+                conversation_state=pipeline.conversation_state,
+                meta=pipeline.meta_payload,
+            )
+
+        return reply_message
+
+    async def _finalize_response(
+        self,
+        pipeline: PipelineResult,
+        payload: CommandRequest,
+        reply_message: str,
+    ) -> CommandResponse:
+        """后处理：安全清理、天气拼接、会话状态更新、组装 CommandResponse。"""
+        session_id = pipeline.session_id
+        context = pipeline.conversation_state
+        meta_payload = pipeline.meta_payload
+        function_analysis = pipeline.function_analysis
+        raw_output = pipeline.raw_output
+        rule_match = pipeline.rule_match
 
         trimmed_reply = (reply_message or "").strip()
         detail_meta = function_analysis.weather_detail or {}
@@ -1610,7 +1707,6 @@ class CommandService:
                 if function_analysis.weather_summary:
                     function_analysis.weather_summary = function_analysis.weather_summary.replace(location_name, default_city)
         use_fallback = False
-        # 对 need_clarify 场景，不使用本地兜底，完全依赖 LLM/clarify_message
         is_unknown_clarify = not function_analysis.result and function_analysis.need_clarify
         if not function_analysis.need_clarify:
             if not trimmed_reply:
@@ -1657,7 +1753,7 @@ class CommandService:
         logger.debug(
             "timing handle_command",
             step="total",
-            duration=round(perf_counter() - overall_start, 3),
+            duration=round(perf_counter() - pipeline.overall_start, 3),
             session_id=session_id,
         )
 
@@ -1672,11 +1768,9 @@ class CommandService:
             fa_result in REQUIRES_SELECTION_RESULTS and not fa_target and bool(selection_candidates)
         )
 
-        # 对需要选择用户的功能：优先使用候选用户纠正/补全 target；若仍无法确定则触发二次询问
         if fa_result in REQUIRES_SELECTION_RESULTS:
             candidates = selection_candidates
             if candidates:
-                # 1) 已有 target 但不在候选名单：尝试模糊匹配，否则清空
                 if fa_target and fa_target not in candidates:
                     matched = self._match_candidate(fa_target, candidates)
                     if matched:
@@ -1686,7 +1780,6 @@ class CommandService:
                         function_analysis.target = ""
                         fa_target = ""
 
-                # 2) 缺少 target：若只有一个候选直接采用；多候选则生成二次询问话术
                 if not fa_target:
                     if len(candidates) == 1:
                         function_analysis.target = candidates[0]
@@ -1729,12 +1822,10 @@ class CommandService:
             if query_city and query_city == location_name:
                 detail_meta["location_source"] = "query"
 
-        # 若没有回复文本但有澄清语，优先使用澄清语
         trimmed_reply = (response_message or "").strip()
         if not trimmed_reply and function_analysis.need_clarify and function_analysis.clarify_message:
             response_message = function_analysis.clarify_message
 
-        # 记录会话：以最终 response_message/function_analysis 为准
         self._conversation_manager.update_state(
             session_id=session_id,
             query=payload.query,
@@ -1751,3 +1842,218 @@ class CommandService:
             requires_selection=requires_selection,
             function_analysis=function_analysis,
         )
+
+    async def handle_command(self, payload: CommandRequest) -> CommandResponse:
+        session_id, context, meta_payload = self._prepare_session(payload)
+
+        selection_response = await self._handle_user_selection(
+            session_id=session_id,
+            query=payload.query,
+            meta_payload=meta_payload,
+            conversation_state=context,
+        )
+        if selection_response:
+            return selection_response
+
+        weather_context = None
+        try:
+            pipeline = await self._run_classification_pipeline(
+                payload=payload,
+                session_id=session_id,
+                context=context,
+                meta_payload=meta_payload,
+            )
+            weather_context = pipeline.weather_context
+            reply_message = await self._generate_reply_message(pipeline, payload)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("classification failed, using fallback", error=str(exc))
+            function_analysis = FunctionAnalysis(
+                result="未知指令",
+                target="",
+                event=None,
+                status=None,
+                confidence=0.0,
+                need_clarify=True,
+                clarify_message="我暂时无法理解您的需求，可以换种说法吗？",
+                reasoning="遭遇异常，使用兜底策略",
+            )
+            reply_message = function_analysis.clarify_message or "请再描述一次您的需求。"
+            raw_output = ""
+            if weather_context and "天气" in (function_analysis.result or ""):
+                function_analysis.weather_summary = weather_context.summary
+                function_analysis.weather_detail = weather_context.to_function_detail()
+                judgement, evidence = _evaluate_weather_condition(
+                    getattr(function_analysis, "weather_condition", None),
+                    weather_context,
+                )
+                if evidence:
+                    function_analysis.weather_evidence = evidence
+                if judgement:
+                    function_analysis.weather_judgement = judgement
+                    function_analysis.weather_confidence = 0.9
+                detail_meta = function_analysis.weather_detail or {}
+                source_notes: list[str] = []
+                loc_source = detail_meta.get("location_source")
+                if loc_source == "default":
+                    source_notes.append("未识别具体地名，使用默认城市。")
+                elif loc_source == "llm":
+                    source_notes.append("地名来源于模型解析。")
+                elif loc_source == "llm_low":
+                    source_notes.append("地名为模型推测结果，请留意是否准确。")
+                date_source = detail_meta.get("target_date_source")
+                if date_source == "llm":
+                    source_notes.append("日期参考模型解析。")
+                elif date_source == "default" and not weather_context.target_date:
+                    source_notes.append("未解析到具体日期。")
+                if source_notes:
+                    if function_analysis.reasoning:
+                        function_analysis.reasoning += "；" + "；".join(source_notes)
+                    else:
+                        function_analysis.reasoning = "；".join(source_notes)
+            pipeline = PipelineResult(
+                session_id=session_id,
+                function_analysis=function_analysis,
+                reply_message=reply_message,
+                raw_output=raw_output,
+                rule_match=None,
+                weather_context=weather_context,
+                conversation_state=context,
+                meta_payload=meta_payload,
+                rule_source="llm",
+                overall_start=perf_counter(),
+            )
+
+        return await self._finalize_response(pipeline, payload, reply_message)
+
+    async def handle_command_stream(self, payload: CommandRequest) -> AsyncIterator[str]:
+        """SSE 流式输出：分类管线完成后逐 token 输出回复文本。"""
+        session_id, context, meta_payload = self._prepare_session(payload)
+
+        selection_response = await self._handle_user_selection(
+            session_id=session_id,
+            query=payload.query,
+            meta_payload=meta_payload,
+            conversation_state=context,
+        )
+        if selection_response:
+            yield sse_done_event(selection_response.model_dump(by_alias=True))
+            return
+
+        try:
+            pipeline = await self._run_classification_pipeline(
+                payload=payload,
+                session_id=session_id,
+                context=context,
+                meta_payload=meta_payload,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("stream: classification failed", error=str(exc))
+            yield sse_error_event(str(exc))
+            return
+
+        # 发送 meta 事件（function_analysis 已确定）
+        meta_data = {
+            "code": 200,
+            "sessionId": pipeline.session_id,
+            "requiresSelection": False,
+            "function_analysis": pipeline.function_analysis.model_dump(),
+        }
+        yield sse_meta_event(meta_data)
+
+        # 流式生成 msg
+        collected_chunks: list[str] = []
+        streamed = False
+        reply_message = pipeline.reply_message
+
+        if pipeline.weather_reply_data and self._reply_llm_client and self._weather_reply_prompt:
+            # 天气回复流式生成 — 直接用天气数据
+            user_message = json.dumps(pipeline.weather_reply_data, ensure_ascii=False)
+            try:
+                async for chunk in self._reply_llm_client.chat_stream(
+                    system_prompt=self._weather_reply_prompt,
+                    messages=[{"role": "user", "content": user_message}],
+                    overrides={"max_tokens": 160, "temperature": 0.4, "top_p": 0.8},
+                ):
+                    collected_chunks.append(chunk)
+                    yield sse_msg_delta_event(chunk)
+                streamed = True
+            except Exception:  # noqa: BLE001
+                fallback_reply = await self._generate_weather_reply_text(
+                    query=payload.query,
+                    summary="",
+                    detail=pipeline.weather_reply_data,
+                )
+                collected_chunks = [fallback_reply]
+                yield sse_msg_delta_event(fallback_reply)
+
+        elif pipeline.weather_reply_summary and self._reply_llm_client and self._weather_reply_prompt:
+            # 旧路径 fallback：基于天气摘要生成
+            prompt_payload = {
+                "query": payload.query,
+                "summary": pipeline.weather_reply_summary,
+                "detail": {},
+            }
+            user_message = json.dumps(prompt_payload, ensure_ascii=False)
+            try:
+                async for chunk in self._reply_llm_client.chat_stream(
+                    system_prompt=self._weather_reply_prompt,
+                    messages=[{"role": "user", "content": user_message}],
+                    overrides={"max_tokens": 160, "temperature": 0.4, "top_p": 0.8},
+                ):
+                    collected_chunks.append(chunk)
+                    yield sse_msg_delta_event(chunk)
+                streamed = True
+            except Exception:  # noqa: BLE001
+                fallback_reply = await self._generate_weather_reply_text(
+                    query=payload.query,
+                    summary=pipeline.weather_reply_summary,
+                    detail=None,
+                )
+                collected_chunks = [fallback_reply]
+                yield sse_msg_delta_event(fallback_reply)
+
+        elif pipeline.needs_structured_reply and self._reply_llm_client and self._reply_prompt:
+            # 结构化回复流式生成
+            history_messages = pipeline.conversation_state.as_messages(limit=2)
+            fa_dict = pipeline.function_analysis.model_dump()
+            structured_payload = {
+                "session_id": pipeline.session_id,
+                "query": payload.query,
+                "function_analysis": fa_dict,
+            }
+            if pipeline.meta_payload:
+                structured_payload["meta"] = pipeline.meta_payload
+            user_message = json.dumps(structured_payload, ensure_ascii=False)
+            messages = [*history_messages, {"role": "user", "content": user_message}]
+            try:
+                async for chunk in self._reply_llm_client.chat_stream(
+                    system_prompt=self._reply_prompt,
+                    messages=messages,
+                    overrides={"max_tokens": 200, "temperature": 0.4, "top_p": 0.9},
+                ):
+                    collected_chunks.append(chunk)
+                    yield sse_msg_delta_event(chunk)
+                streamed = True
+            except Exception:  # noqa: BLE001
+                fallback_reply = await self._generate_structured_reply(
+                    session_id=pipeline.session_id,
+                    query=payload.query,
+                    function_analysis=pipeline.function_analysis,
+                    conversation_state=pipeline.conversation_state,
+                    meta=pipeline.meta_payload,
+                )
+                collected_chunks = [fallback_reply]
+                yield sse_msg_delta_event(fallback_reply)
+
+        if collected_chunks:
+            reply_message = "".join(collected_chunks)
+        if not streamed and reply_message:
+            yield sse_msg_delta_event(reply_message)
+
+        # 后处理 + 发送 done 事件
+        try:
+            response = await self._finalize_response(pipeline, payload, reply_message)
+            yield sse_done_event(response.model_dump(by_alias=True))
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("stream: finalize failed", error=str(exc))
+            yield sse_error_event(str(exc))
