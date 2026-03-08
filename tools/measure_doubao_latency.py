@@ -2,9 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 from pathlib import Path
 from statistics import mean
 from time import perf_counter
+
+# 兼容以脚本方式运行（python tools/measure_doubao_latency.py），确保可导入项目包 app/*
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.services.llm_client import DoubaoClient
 from app.services.prompt_templates import build_system_prompt

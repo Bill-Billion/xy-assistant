@@ -16,6 +16,7 @@ class IntentCode(str, Enum):
     ALARM_VIEW = "ALARM_VIEW"
     ALARM_CREATE = "ALARM_CREATE"
     ALARM_REMINDER = "ALARM_REMINDER"
+    ALARM_CANCEL = "ALARM_CANCEL"
     SETTINGS_GENERAL = "SETTINGS_GENERAL"
     SETTINGS_SOUND_DOWN = "SETTINGS_SOUND_DOWN"
     SETTINGS_SOUND_UP = "SETTINGS_SOUND_UP"
@@ -57,6 +58,7 @@ class IntentCode(str, Enum):
     HOME_SERVICE_FOOT = "HOME_SERVICE_FOOT"
     EDUCATION_GENERAL = "EDUCATION_GENERAL"
     ENTERTAINMENT_GENERAL = "ENTERTAINMENT_GENERAL"
+    ENTERTAINMENT_MOVIE = "ENTERTAINMENT_MOVIE"
     ENTERTAINMENT_OPERA = "ENTERTAINMENT_OPERA"
     ENTERTAINMENT_OPERA_SPECIFIC = "ENTERTAINMENT_OPERA_SPECIFIC"
     ENTERTAINMENT_MUSIC = "ENTERTAINMENT_MUSIC"
@@ -105,6 +107,7 @@ INTENT_DEFINITIONS: dict[IntentCode, IntentDefinition] = {
     IntentCode.ALARM_VIEW: IntentDefinition(IntentCode.ALARM_VIEW, "闹钟界面"),
     IntentCode.ALARM_CREATE: IntentDefinition(IntentCode.ALARM_CREATE, "新增闹钟", True, True, True),
     IntentCode.ALARM_REMINDER: IntentDefinition(IntentCode.ALARM_REMINDER, "新增闹钟", True, True, True),
+    IntentCode.ALARM_CANCEL: IntentDefinition(IntentCode.ALARM_CANCEL, "取消闹钟", True, True, True),
     IntentCode.SETTINGS_GENERAL: IntentDefinition(IntentCode.SETTINGS_GENERAL, "小雅设置"),
     IntentCode.SETTINGS_SOUND_DOWN: IntentDefinition(IntentCode.SETTINGS_SOUND_DOWN, "声音调低"),
     IntentCode.SETTINGS_SOUND_UP: IntentDefinition(IntentCode.SETTINGS_SOUND_UP, "声音调高"),
@@ -127,17 +130,17 @@ INTENT_DEFINITIONS: dict[IntentCode, IntentDefinition] = {
     IntentCode.HEALTH_DOCTOR_GENERAL: IntentDefinition(IntentCode.HEALTH_DOCTOR_GENERAL, "小雅医生"),
     IntentCode.HEALTH_DOCTOR_SPECIFIC: IntentDefinition(IntentCode.HEALTH_DOCTOR_SPECIFIC, "小雅医生", True),
     IntentCode.HEALTH_SPECIALIST: IntentDefinition(IntentCode.HEALTH_SPECIALIST, "名医问诊"),
-    IntentCode.MEDICATION_REMINDER_VIEW: IntentDefinition(IntentCode.MEDICATION_REMINDER_VIEW, "用药提醒"),
-    IntentCode.MEDICATION_REMINDER_CREATE: IntentDefinition(IntentCode.MEDICATION_REMINDER_CREATE, "新建用药提醒", True),
+    IntentCode.MEDICATION_REMINDER_VIEW: IntentDefinition(IntentCode.MEDICATION_REMINDER_VIEW, "用药计划"),
+    IntentCode.MEDICATION_REMINDER_CREATE: IntentDefinition(IntentCode.MEDICATION_REMINDER_CREATE, "用药计划", True),
     IntentCode.FAMILY_DOCTOR_GENERAL: IntentDefinition(IntentCode.FAMILY_DOCTOR_GENERAL, "家庭医生"),
     IntentCode.FAMILY_DOCTOR_CONTACT: IntentDefinition(IntentCode.FAMILY_DOCTOR_CONTACT, "家庭医生", True),
-    IntentCode.FAMILY_DOCTOR_CALL_AUDIO: IntentDefinition(IntentCode.FAMILY_DOCTOR_CALL_AUDIO, "家庭医生音频通话", True),
-    IntentCode.FAMILY_DOCTOR_CALL_VIDEO: IntentDefinition(IntentCode.FAMILY_DOCTOR_CALL_VIDEO, "家庭医生视频通话", True),
+    IntentCode.FAMILY_DOCTOR_CALL_AUDIO: IntentDefinition(IntentCode.FAMILY_DOCTOR_CALL_AUDIO, "家庭医生", True),
+    IntentCode.FAMILY_DOCTOR_CALL_VIDEO: IntentDefinition(IntentCode.FAMILY_DOCTOR_CALL_VIDEO, "家庭医生", True),
     IntentCode.ALBUM: IntentDefinition(IntentCode.ALBUM, "小雅相册"),
     IntentCode.COMMUNICATION_GENERAL: IntentDefinition(IntentCode.COMMUNICATION_GENERAL, "小雅通话"),
     IntentCode.COMMUNICATION_CALL_AUDIO: IntentDefinition(IntentCode.COMMUNICATION_CALL_AUDIO, "小雅音频通话", True),
     IntentCode.COMMUNICATION_CALL_VIDEO: IntentDefinition(IntentCode.COMMUNICATION_CALL_VIDEO, "小雅视频通话", True),
-    IntentCode.HOME_SERVICE_GENERAL: IntentDefinition(IntentCode.HOME_SERVICE_GENERAL, "小雅家政"),
+    IntentCode.HOME_SERVICE_GENERAL: IntentDefinition(IntentCode.HOME_SERVICE_GENERAL, "小雅预约"),
     IntentCode.HOME_SERVICE_APPLIANCE: IntentDefinition(IntentCode.HOME_SERVICE_APPLIANCE, "家电维修"),
     IntentCode.HOME_SERVICE_HOUSE: IntentDefinition(IntentCode.HOME_SERVICE_HOUSE, "房屋维修"),
     IntentCode.HOME_SERVICE_WATER_ELECTRIC: IntentDefinition(IntentCode.HOME_SERVICE_WATER_ELECTRIC, "水电维修"),
@@ -145,7 +148,8 @@ INTENT_DEFINITIONS: dict[IntentCode, IntentDefinition] = {
     IntentCode.HOME_SERVICE_DOMESTIC: IntentDefinition(IntentCode.HOME_SERVICE_DOMESTIC, "家政服务"),
     IntentCode.HOME_SERVICE_FOOT: IntentDefinition(IntentCode.HOME_SERVICE_FOOT, "中医足道"),
     IntentCode.EDUCATION_GENERAL: IntentDefinition(IntentCode.EDUCATION_GENERAL, "小雅教育", True),
-    IntentCode.ENTERTAINMENT_GENERAL: IntentDefinition(IntentCode.ENTERTAINMENT_GENERAL, "娱乐"),
+    IntentCode.ENTERTAINMENT_GENERAL: IntentDefinition(IntentCode.ENTERTAINMENT_GENERAL, "娱乐管家"),
+    IntentCode.ENTERTAINMENT_MOVIE: IntentDefinition(IntentCode.ENTERTAINMENT_MOVIE, "小雅电影"),
     IntentCode.ENTERTAINMENT_OPERA: IntentDefinition(IntentCode.ENTERTAINMENT_OPERA, "小雅曲艺"),
     IntentCode.ENTERTAINMENT_OPERA_SPECIFIC: IntentDefinition(IntentCode.ENTERTAINMENT_OPERA_SPECIFIC, "小雅曲艺", True),
     IntentCode.ENTERTAINMENT_MUSIC: IntentDefinition(IntentCode.ENTERTAINMENT_MUSIC, "小雅音乐"),

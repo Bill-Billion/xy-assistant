@@ -441,6 +441,58 @@ class WeatherService:
         re.compile(r"\d{1,2}号"),
     ]
     _TIME_TOKENS_SORTED = sorted(_TIME_TOKENS, key=len, reverse=True)
+    _STRICT_REALTIME_TIME_TOKENS = (
+        "现在",
+        "当前",
+        "此刻",
+        "此时",
+        "实时",
+        "外面",
+        "室外",
+        "外边",
+        "外头",
+    )
+    _STRICT_REALTIME_WEATHER_TOKENS = (
+        "天气",
+        "气温",
+        "温度",
+        "多少度",
+        "几度",
+        "℃",
+        "下雨",
+        "降雨",
+        "刮风",
+        "风力",
+        "风大",
+        "空气质量",
+        "雾霾",
+        "湿度",
+        "紫外线",
+    )
+
+    def _is_strict_realtime_query(self, query: str) -> bool:
+        """判断是否为“现在/室外”等需要更及时更新的天气查询。"""
+        q = (query or "").strip()
+        if not q:
+            return False
+        q_lower = q.lower()
+        has_time_hint = any(token in q for token in self._STRICT_REALTIME_TIME_TOKENS)
+        has_weather_hint = any(token in q for token in self._STRICT_REALTIME_WEATHER_TOKENS) or "°c" in q_lower
+        return has_time_hint and has_weather_hint
+
+    def _is_realtime_cache_fresh(self, cached: "WeatherContext") -> bool:
+        ttl = int(getattr(self, "_realtime_cache_ttl", 0) or 0)
+        if ttl <= 0:
+            return False
+        meta = getattr(cached, "llm_metadata", None)
+        if not isinstance(meta, dict):
+            return False
+        raw_ts = meta.get("api_retrieved_at_ts")
+        try:
+            ts = float(raw_ts)
+        except (TypeError, ValueError):
+            return False
+        return (time.monotonic() - ts) <= ttl
 
     def __init__(
         self,
@@ -481,6 +533,7 @@ class WeatherService:
             maxsize=256,
             ttl=settings.weather_geo_cache_ttl,
         )
+        self._realtime_cache_ttl = max(0, int(getattr(settings, "weather_realtime_cache_ttl", 60) or 0))
         self._throttle_lock = asyncio.Lock()
         self._last_fetch_ts = 0.0
 
@@ -528,8 +581,8 @@ class WeatherService:
             llm_info["location"] = location_name
             llm_info["location_confidence"] = location_confidence
         else:
-            if provided_source in {"query", "rule"}:
-                location_source = provided_source
+            if provided_source in {"query", "rule", "meta", "context"}:
+                location_source = str(provided_source)
                 location_confidence = max(location_confidence or 0.0, 0.85)
             else:
                 if location_confidence is not None and location_confidence >= self._llm_confidence_threshold:
@@ -560,8 +613,11 @@ class WeatherService:
             "llm_info": llm_info,
             "needs_realtime_data": needs_realtime,
         }
+        strict_realtime = bool(needs_realtime) and self._is_strict_realtime_query(query)
 
         if not needs_realtime or not self._enabled:
+            base_metadata.setdefault("api_retrieved_at", now_e8().isoformat())
+            base_metadata.setdefault("api_retrieved_at_ts", time.monotonic())
             context = WeatherContext(
                 location=geo_point.name,
                 point=geo_point,
@@ -583,12 +639,18 @@ class WeatherService:
 
         if cache_key in self._weather_cache:
             cached = self._weather_cache[cache_key]
-            cached.llm_metadata.update(base_metadata)
-            return cached.clone(
-                location_source=location_source,
-                target_date_source=target_date_source,
-                llm_metadata=cached.llm_metadata,
-            )
+            if strict_realtime and not self._is_realtime_cache_fresh(cached):
+                try:
+                    del self._weather_cache[cache_key]
+                except KeyError:
+                    pass
+            else:
+                cached.llm_metadata.update(base_metadata)
+                return cached.clone(
+                    location_source=location_source,
+                    target_date_source=target_date_source,
+                    llm_metadata=cached.llm_metadata,
+                )
 
         overall_start = perf_counter()
         body: Optional[Dict[str, Any]] = None
@@ -630,7 +692,10 @@ class WeatherService:
                     attempt=attempt + 1,
                 )
                 if attempt + 1 >= attempts:
-                    return None
+                    base_metadata["api_failed"] = True
+                    base_metadata["api_error"] = str(exc)
+                    body = None
+                    break
                 await asyncio.sleep(0.8)
             except httpx.HTTPError as exc:
                 logger.warning(
@@ -639,12 +704,31 @@ class WeatherService:
                     attempt=attempt + 1,
                 )
                 if attempt + 1 >= attempts:
-                    return None
+                    base_metadata["api_failed"] = True
+                    base_metadata["api_error"] = str(exc)
+                    body = None
+                    break
                 await asyncio.sleep(0.8)
 
         if not body:
-            return None
+            base_metadata.setdefault("api_retrieved_at", now_e8().isoformat())
+            base_metadata.setdefault("api_retrieved_at_ts", time.monotonic())
+            context = WeatherContext(
+                location=geo_point.name,
+                point=geo_point,
+                target_date=target_date,
+                daily=[],
+                current={},
+                derived_flags={},
+                location_source=location_source,
+                target_date_source=target_date_source,
+                llm_metadata=base_metadata,
+            )
+            self._weather_cache[cache_key] = context
+            return context
 
+        base_metadata.setdefault("api_retrieved_at", now_e8().isoformat())
+        base_metadata.setdefault("api_retrieved_at_ts", time.monotonic())
         daily_items = _parse_daily(body)
         current = body.get("now") or {}
 

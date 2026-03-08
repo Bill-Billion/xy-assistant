@@ -1,0 +1,77 @@
+﻿指令模式,意图码,预期操作(result),是否规则直达,来源
+天气/气温/温度/几度/多少度/雨雪风雾霾 + 今天/现在/室外,WEATHER_TODAY,今天天气,是,app/services/intent_rules.py:apply_weather_rule
+天气/气温/温度/几度/多少度/雨雪风雾霾 + 明天,WEATHER_TOMORROW,明天天气,是,app/services/intent_rules.py:apply_weather_rule
+天气/气温/温度/几度/多少度/雨雪风雾霾 + 后天,WEATHER_DAY_AFTER,后天天气,是,app/services/intent_rules.py:apply_weather_rule
+天气/气温/温度/几度/多少度/雨雪风雾霾 + 具体日期(15天内),WEATHER_SPECIFIC,特定日期天气,是,app/services/intent_rules.py:apply_weather_rule
+天气/气温/温度/几度/多少度/雨雪风雾霾 + 具体日期(超15天),WEATHER_OUT_OF_RANGE,我还只能查到15天内的天气哦,是,app/services/intent_rules.py:apply_weather_rule
+几月几日/农历/黄历/万年历/节气/适合搬家,CALENDAR_GENERAL,日期时间和万年历,是,app/services/intent_rules.py:apply_calendar_rule
+几点/现在时间,TIME_BROADCAST,播报时间,是,app/services/intent_rules.py:apply_time_rule
+打开/查看/进入 + 闹钟,ALARM_VIEW,闹钟界面,是,app/services/intent_rules.py:apply_time_rule
+闹钟 + 时间表达,ALARM_CREATE,新增闹钟,是,app/services/intent_rules.py:apply_time_rule
+提醒我... + 时间/事件,ALARM_REMINDER,新增闹钟,是,app/services/intent_rules.py:apply_time_rule
+设置/打开设置/系统设置,SETTINGS_GENERAL,小雅设置,是,app/services/intent_rules.py:apply_settings_rule
+声音/音量 + 调高/大一点/...,SETTINGS_SOUND_UP,声音调高,是,app/services/intent_rules.py:apply_settings_rule
+声音/音量 + 调低/小一点/...,SETTINGS_SOUND_DOWN,声音调低,是,app/services/intent_rules.py:apply_settings_rule
+亮度/屏幕 + 调亮/亮一点/...,SETTINGS_BRIGHTNESS_UP,亮度调高,是,app/services/intent_rules.py:apply_settings_rule
+亮度/屏幕 + 调暗/暗一点/...,SETTINGS_BRIGHTNESS_DOWN,亮度调低,是,app/services/intent_rules.py:apply_settings_rule
+关机/关闭屏幕/息屏,DEVICE_SCREEN_OFF,息屏,是,app/services/intent_rules.py:apply_settings_rule
+健康监测/健康检测,HEALTH_MONITOR_GENERAL,健康监测,是,app/services/intent_rules.py:apply_health_rules
+测血压/血压监测,HEALTH_MONITOR_BLOOD_PRESSURE,血压监测,是,app/services/intent_rules.py:apply_health_rules
+测血氧/血氧监测,HEALTH_MONITOR_BLOOD_OXYGEN,血氧监测,是,app/services/intent_rules.py:apply_health_rules
+测心率/心率监测,HEALTH_MONITOR_HEART_RATE,心率监测,是,app/services/intent_rules.py:apply_health_rules
+测血糖/血糖监测,HEALTH_MONITOR_BLOOD_SUGAR,血糖监测,是,app/services/intent_rules.py:apply_health_rules
+测血脂/血脂监测,HEALTH_MONITOR_BLOOD_LIPIDS,血脂监测,是,app/services/intent_rules.py:apply_health_rules
+称体重/体重监测,HEALTH_MONITOR_WEIGHT,体重监测,是,app/services/intent_rules.py:apply_health_rules
+测体温/体温监测,HEALTH_MONITOR_BODY_TEMPERATURE,体温监测,是,app/services/intent_rules.py:apply_health_rules
+测血红蛋白/血红蛋白监测,HEALTH_MONITOR_HEMOGLOBIN,血红蛋白监测,是,app/services/intent_rules.py:apply_health_rules
+测尿酸/尿酸监测,HEALTH_MONITOR_URIC_ACID,尿酸监测,是,app/services/intent_rules.py:apply_health_rules
+睡眠监测/睡眠情况/睡眠质量,HEALTH_MONITOR_SLEEP,睡眠监测,是,app/services/intent_rules.py:apply_health_rules
+健康评估/认知评估/...,HEALTH_EVALUATION,健康评估,是,app/services/intent_rules.py:apply_health_rules
+怎么判断/怎么办/讲讲...（健康语义）,HEALTH_EDUCATION,健康科普,是,app/services/intent_rules.py:apply_health_rules
+XX的健康状况/健康画像,HEALTH_PROFILE,健康画像,是,app/services/intent_rules.py:apply_health_rules
+小雅医生/健康咨询,HEALTH_DOCTOR_GENERAL,小雅医生,是,app/services/intent_rules.py:apply_health_rules
+小雅医生/健康咨询 + 指定人员,HEALTH_DOCTOR_SPECIFIC,小雅医生,是,app/services/intent_rules.py:apply_health_rules
+名医问诊/远程问诊,HEALTH_SPECIALIST,名医问诊,是,app/services/intent_rules.py:apply_health_rules
+用药提醒/服药计划（查看）,MEDICATION_REMINDER_VIEW,用药提醒,是,app/services/intent_rules.py:apply_health_rules
+新增/添加 + 用药/服药/吃药（含时间）,MEDICATION_REMINDER_CREATE,新建用药提醒,是,app/services/intent_rules.py:apply_health_rules
+家庭医生,FAMILY_DOCTOR_GENERAL,家庭医生,是,app/services/intent_rules.py:apply_family_doctor_rule
+家庭医生 + 指定人员,FAMILY_DOCTOR_CONTACT,家庭医生,是,app/services/intent_rules.py:apply_family_doctor_rule
+家庭医生 + 电话/联系,FAMILY_DOCTOR_CALL_AUDIO,家庭医生音频通话,是,app/services/intent_rules.py:apply_family_doctor_rule
+家庭医生 + 视频,FAMILY_DOCTOR_CALL_VIDEO,家庭医生视频通话,是,app/services/intent_rules.py:apply_family_doctor_rule
+相册/照片,ALBUM,小雅相册,是,app/services/intent_rules.py:apply_album_rule
+联系家人/小雅通话,COMMUNICATION_GENERAL,小雅通话,是,app/services/intent_rules.py:apply_communication_rule
+打电话 + 人名,COMMUNICATION_CALL_AUDIO,小雅音频通话,是,app/services/intent_rules.py:apply_communication_rule
+打视频/视频 + 人名,COMMUNICATION_CALL_VIDEO,小雅视频通话,是,app/services/intent_rules.py:apply_communication_rule
+小雅家政/预约服务/服务预约,HOME_SERVICE_GENERAL,小雅家政,是,app/services/intent_rules.py:apply_home_service_rule
+家电/电器/电视/冰箱/空调 维修,HOME_SERVICE_APPLIANCE,家电维修,是,app/services/intent_rules.py:apply_home_service_rule
+房屋/墙/屋顶 维修,HOME_SERVICE_HOUSE,房屋维修,是,app/services/intent_rules.py:apply_home_service_rule
+漏水/水管/电/线路 维修,HOME_SERVICE_WATER_ELECTRIC,水电维修,是,app/services/intent_rules.py:apply_home_service_rule
+母婴/月嫂,HOME_SERVICE_MATERNAL,母婴服务,是,app/services/intent_rules.py:apply_home_service_rule
+家政/保洁/阿姨,HOME_SERVICE_DOMESTIC,家政服务,是,app/services/intent_rules.py:apply_home_service_rule
+足道/足疗,HOME_SERVICE_FOOT,中医足道,是,app/services/intent_rules.py:apply_home_service_rule
+学习/课程/教学/我想学...,EDUCATION_GENERAL,小雅教育,是,app/services/intent_rules.py:apply_education_rule
+娱乐/游戏,ENTERTAINMENT_GENERAL,娱乐,是,app/services/intent_rules.py:apply_entertainment_rule
+戏曲/听戏/曲艺,ENTERTAINMENT_OPERA,小雅曲艺,是,app/services/intent_rules.py:apply_entertainment_rule
+戏曲/曲艺 + 具体标题,ENTERTAINMENT_OPERA_SPECIFIC,小雅曲艺,是,app/services/intent_rules.py:apply_entertainment_rule
+音乐/听歌,ENTERTAINMENT_MUSIC,小雅音乐,是,app/services/intent_rules.py:apply_entertainment_rule
+音乐/听歌 + 具体标题,ENTERTAINMENT_MUSIC_SPECIFIC,小雅音乐,是,app/services/intent_rules.py:apply_entertainment_rule
+听书/听小说,ENTERTAINMENT_AUDIOBOOK,小雅听书,是,app/services/intent_rules.py:apply_entertainment_rule
+暂停/停止/关闭 + 音乐,ENTERTAINMENT_MUSIC_OFF,关闭音乐,是,app/services/intent_rules.py:apply_entertainment_rule
+暂停/停止/关闭 + 听书/小说,ENTERTAINMENT_AUDIOBOOK_OFF,关闭听书,是,app/services/intent_rules.py:apply_entertainment_rule
+暂停/停止/关闭 + 戏曲/曲艺,ENTERTAINMENT_OPERA_OFF,关闭戏曲,是,app/services/intent_rules.py:apply_entertainment_rule
+继续播放/继续听/恢复播放,ENTERTAINMENT_RESUME,继续播放,是,app/services/intent_rules.py:apply_entertainment_rule
+上一首/上一曲/往前一首,ENTERTAINMENT_PREV_TRACK,上一首,是,app/services/intent_rules.py:apply_entertainment_rule
+下一首/下一曲/往后一首,ENTERTAINMENT_NEXT_TRACK,下一首,是,app/services/intent_rules.py:apply_entertainment_rule
+讲笑话/来个笑话/讲段子/逗我笑,JOKE_MODE,笑话模式,是,app/services/intent_rules.py:apply_entertainment_rule
+斗地主,GAME_DOU_DI_ZHU,斗地主,是,app/services/intent_rules.py:apply_entertainment_rule
+象棋/下棋,GAME_CHINESE_CHESS,中国象棋,是,app/services/intent_rules.py:apply_entertainment_rule
+聊天/聊聊/陪我聊/唠嗑,CHAT,语音陪伴或聊天,是,app/services/intent_rules.py:apply_entertainment_rule
+小雅商城/购买商品/商城,MALL_GENERAL,商城,是,app/services/intent_rules.py:apply_mall_rule
+数字健康机器人/健康机器人/机器人,MALL_DIGITAL_HEALTH_ROBOT,数字健康机器人,是,app/services/intent_rules.py:apply_mall_rule
+健康监测终端/监测终端/血压计/血氧仪/血糖仪...,MALL_HEALTH_MONITOR_TERMINAL,健康监测终端,是,app/services/intent_rules.py:apply_mall_rule
+智慧生活终端/智慧生活/智能家居,MALL_SMART_LIFE_TERMINAL,智慧生活终端,是,app/services/intent_rules.py:apply_mall_rule
+健康食疗产品,MALL_HEALTH_FOOD,健康食疗产品,是,app/services/intent_rules.py:apply_mall_rule
+适老化用品,MALL_SILVER_PRODUCTS,适老化用品,是,app/services/intent_rules.py:apply_mall_rule
+日常生活用品,MALL_DAILY_PRODUCTS,日常生活用品,是,app/services/intent_rules.py:apply_mall_rule
+我的订单/查看订单,MALL_ORDERS,订单页面,是,app/services/intent_rules.py:apply_mall_rule
+规则未命中且LLM低置信/需澄清,UNKNOWN,未知指令,否,app/services/intent_definitions.py + app/services/intent_classifier.py

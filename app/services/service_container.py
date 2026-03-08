@@ -69,6 +69,7 @@ def get_weather_broadcast_generator() -> WeatherBroadcastGenerator:
     )
 
 
+@lru_cache(maxsize=1)
 def get_command_service() -> CommandService:
     settings = get_settings()
     return CommandService(
