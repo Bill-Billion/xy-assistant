@@ -2,11 +2,22 @@ __pycache__/
 *.pyc
 *.pyo
 
+# 本地环境与代理工具配置
+.env
+.env.docker
+.claude/settings.local.json
+CLAUDE.md
+
 # 本地/工具生成的回归结果
 order_fuzzy_results.csv
+order_fuzzy_results_live.csv
+tools/full_report_output.txt
 
 # 打包产物（镜像 tar）
 *.tar
+
+# 本地资料文件
+*.xlsx
 
 # Serena 本地索引
 .serena/
