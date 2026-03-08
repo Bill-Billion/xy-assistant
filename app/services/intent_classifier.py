@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
@@ -11,7 +12,7 @@ from loguru import logger
 
 from app.services.conversation import ConversationState
 from app.services.intent_definitions import INTENT_DEFINITIONS, IntentCode
-from app.services.intent_rules import RuleResult, run_rules
+from app.services.intent_rules import RuleResult, extract_settings_absolute_value, extract_settings_relative_delta, run_rules
 from app.services.llm_client import DoubaoClient
 from app.services.target_refiner import TargetRefiner
 from app.services.prompt_templates import build_system_prompt, get_allowed_results
@@ -37,6 +38,10 @@ WEATHER_INTENT_CODES = {
     IntentCode.WEATHER_OUT_OF_RANGE,
 }
 
+SETTINGS_RESULTS = {"声音调高", "声音调低", "亮度调高", "亮度调低"}
+SETTINGS_UP_RESULTS = {"声音调高", "亮度调高"}
+SETTINGS_DOWN_RESULTS = {"声音调低", "亮度调低"}
+
 # 可直接执行的健康类意图（无需进一步澄清即可跳转前端功能）。
 ACTIONABLE_HEALTH_INTENTS = {
     IntentCode.HEALTH_MONITOR_GENERAL,
@@ -50,6 +55,8 @@ ACTIONABLE_HEALTH_INTENTS = {
     IntentCode.HEALTH_MONITOR_HEMOGLOBIN,
     IntentCode.HEALTH_MONITOR_URIC_ACID,
     IntentCode.HEALTH_MONITOR_SLEEP,
+    IntentCode.HEALTH_PROFILE,
+    IntentCode.HEALTH_EVALUATION,
 }
 
 # 可直接执行的医生联系类意图。
@@ -64,11 +71,20 @@ ACTIONABLE_CONTACT_INTENTS = {
 
 # 所有可立即落地的意图合集。
 ACTIONABLE_INTENTS = ACTIONABLE_HEALTH_INTENTS | ACTIONABLE_CONTACT_INTENTS | {
+    *WEATHER_INTENT_CODES,
     IntentCode.ALARM_CREATE,
     IntentCode.ALARM_REMINDER,
+    IntentCode.ALARM_CANCEL,
     IntentCode.ALARM_VIEW,
+    IntentCode.CALENDAR_GENERAL,
+    IntentCode.SETTINGS_GENERAL,
     IntentCode.MEDICATION_REMINDER_VIEW,
     IntentCode.MEDICATION_REMINDER_CREATE,
+    IntentCode.HEALTH_SPECIALIST,
+    IntentCode.CHAT,
+    IntentCode.COMMUNICATION_GENERAL,
+    IntentCode.COMMUNICATION_CALL_AUDIO,
+    IntentCode.COMMUNICATION_CALL_VIDEO,
     IntentCode.ENTERTAINMENT_MUSIC,
     IntentCode.ENTERTAINMENT_OPERA,
     IntentCode.ENTERTAINMENT_AUDIOBOOK,
@@ -78,7 +94,40 @@ ACTIONABLE_INTENTS = ACTIONABLE_HEALTH_INTENTS | ACTIONABLE_CONTACT_INTENTS | {
     IntentCode.ENTERTAINMENT_RESUME,
     IntentCode.JOKE_MODE,
     IntentCode.ENTERTAINMENT_GENERAL,
+    IntentCode.ENTERTAINMENT_MOVIE,
+    IntentCode.HOME_SERVICE_GENERAL,
+    IntentCode.HOME_SERVICE_APPLIANCE,
+    IntentCode.HOME_SERVICE_HOUSE,
+    IntentCode.HOME_SERVICE_WATER_ELECTRIC,
+    IntentCode.HOME_SERVICE_MATERNAL,
+    IntentCode.HOME_SERVICE_DOMESTIC,
+    IntentCode.HOME_SERVICE_FOOT,
+    IntentCode.EDUCATION_GENERAL,
+    IntentCode.MALL_GENERAL,
+    IntentCode.MALL_DIGITAL_HEALTH_ROBOT,
+    IntentCode.MALL_HEALTH_MONITOR_TERMINAL,
+    IntentCode.MALL_SMART_LIFE_TERMINAL,
+    IntentCode.MALL_HEALTH_FOOD,
+    IntentCode.MALL_SILVER_PRODUCTS,
+    IntentCode.MALL_DAILY_PRODUCTS,
+    IntentCode.MALL_ORDERS,
+    IntentCode.ALBUM,
+    IntentCode.DEVICE_SCREEN_OFF,
+    IntentCode.SETTINGS_SOUND_UP,
+    IntentCode.SETTINGS_SOUND_DOWN,
+    IntentCode.SETTINGS_BRIGHTNESS_UP,
+    IntentCode.SETTINGS_BRIGHTNESS_DOWN,
 }
+
+# 规则兜底/提升白名单：仅允许这些“高确定性、强可执行”的意图被规则纠偏/补全，
+# 避免“娱乐一下/来点什么”等含糊表达被模板短路，保持大模型澄清能力。
+SAFE_RULE_MERGE_INTENTS = (
+    ACTIONABLE_INTENTS
+    | {
+        IntentCode.HEALTH_EDUCATION,
+        IntentCode.TIME_BROADCAST,
+    }
+)
 
 # LLM 事件解析参数
 EVENT_CONFIDENCE_THRESHOLD = 0.6
@@ -120,21 +169,42 @@ EVENT_PREFIX_TOKENS = {
 
 # 规则优先映射：当大模型仅识别出泛化意图时，用于提升规则识别的细分意图。
 INTENT_OVERRIDE_MAP: dict[IntentCode, set[IntentCode]] = {
-    IntentCode.HEALTH_MONITOR_GENERAL: ACTIONABLE_HEALTH_INTENTS - {IntentCode.HEALTH_MONITOR_GENERAL},
+    IntentCode.HEALTH_MONITOR_GENERAL: (ACTIONABLE_HEALTH_INTENTS - {IntentCode.HEALTH_MONITOR_GENERAL}) | {IntentCode.HEALTH_EDUCATION},
+    IntentCode.HEALTH_EVALUATION: {IntentCode.HEALTH_PROFILE},
     IntentCode.FAMILY_DOCTOR_GENERAL: {
         IntentCode.FAMILY_DOCTOR_CONTACT,
         IntentCode.FAMILY_DOCTOR_CALL_AUDIO,
         IntentCode.FAMILY_DOCTOR_CALL_VIDEO,
+        IntentCode.HEALTH_SPECIALIST,
     },
     IntentCode.FAMILY_DOCTOR_CONTACT: {
         IntentCode.FAMILY_DOCTOR_CALL_AUDIO,
         IntentCode.FAMILY_DOCTOR_CALL_VIDEO,
+        IntentCode.HEALTH_SPECIALIST,
+    },
+    IntentCode.FAMILY_DOCTOR_CALL_AUDIO: {
+        IntentCode.HEALTH_SPECIALIST,
+    },
+    IntentCode.FAMILY_DOCTOR_CALL_VIDEO: {
+        IntentCode.HEALTH_SPECIALIST,
+    },
+    IntentCode.COMMUNICATION_CALL_AUDIO: {
+        IntentCode.FAMILY_DOCTOR_GENERAL,
+        IntentCode.FAMILY_DOCTOR_CONTACT,
+        IntentCode.FAMILY_DOCTOR_CALL_AUDIO,
+    },
+    IntentCode.COMMUNICATION_CALL_VIDEO: {
+        IntentCode.FAMILY_DOCTOR_GENERAL,
+        IntentCode.FAMILY_DOCTOR_CONTACT,
+        IntentCode.FAMILY_DOCTOR_CALL_VIDEO,
+        IntentCode.EDUCATION_GENERAL,
     },
     IntentCode.COMMUNICATION_GENERAL: {
         IntentCode.COMMUNICATION_CALL_AUDIO,
         IntentCode.COMMUNICATION_CALL_VIDEO,
     },
     IntentCode.ENTERTAINMENT_GENERAL: {
+        IntentCode.ENTERTAINMENT_MOVIE,
         IntentCode.ENTERTAINMENT_OPERA,
         IntentCode.ENTERTAINMENT_OPERA_SPECIFIC,
         IntentCode.ENTERTAINMENT_MUSIC,
@@ -143,9 +213,12 @@ INTENT_OVERRIDE_MAP: dict[IntentCode, set[IntentCode]] = {
         IntentCode.GAME_DOU_DI_ZHU,
         IntentCode.GAME_CHINESE_CHESS,
         IntentCode.CHAT,
+        IntentCode.EDUCATION_GENERAL,
+        IntentCode.HEALTH_EDUCATION,
     },
     IntentCode.ENTERTAINMENT_OPERA: {IntentCode.ENTERTAINMENT_OPERA_SPECIFIC},
     IntentCode.ENTERTAINMENT_MUSIC: {IntentCode.ENTERTAINMENT_MUSIC_SPECIFIC},
+    IntentCode.JOKE_MODE: {IntentCode.CHAT},
     IntentCode.HOME_SERVICE_GENERAL: {
         IntentCode.HOME_SERVICE_APPLIANCE,
         IntentCode.HOME_SERVICE_HOUSE,
@@ -164,6 +237,14 @@ INTENT_OVERRIDE_MAP: dict[IntentCode, set[IntentCode]] = {
         IntentCode.MALL_ORDERS,
     },
     IntentCode.HEALTH_DOCTOR_GENERAL: {IntentCode.HEALTH_DOCTOR_SPECIFIC},
+    IntentCode.TIME_BROADCAST: set(WEATHER_INTENT_CODES),
+    IntentCode.MEDICATION_REMINDER_VIEW: ACTIONABLE_HEALTH_INTENTS,
+    IntentCode.MEDICATION_REMINDER_CREATE: ACTIONABLE_HEALTH_INTENTS,
+    IntentCode.HEALTH_MONITOR_BLOOD_PRESSURE: {IntentCode.HEALTH_EDUCATION},
+    IntentCode.HEALTH_MONITOR_BLOOD_OXYGEN: {IntentCode.HEALTH_EDUCATION},
+    IntentCode.HEALTH_MONITOR_HEART_RATE: {IntentCode.HEALTH_EDUCATION},
+    IntentCode.HEALTH_MONITOR_BLOOD_SUGAR: {IntentCode.HEALTH_EDUCATION},
+    IntentCode.HEALTH_MONITOR_BLOOD_LIPIDS: {IntentCode.HEALTH_EDUCATION},
 }
 
 # 允许规则覆盖大模型结果的置信度容差，避免置信度接近时保留泛化意图。
@@ -199,6 +280,23 @@ CHAT_KEYWORDS = {
     "唠会儿",
 }
 
+# 社交性短语：直接回复，不触发功能也不澄清
+# 注意：不包含"好/好的/行/可以/嗯/嗯嗯/明白/知道了"等确认词，
+# 这些词在多轮澄清中常作为肯定回复，放入此处会中断澄清流程。
+# 同理不包含"小雅"（唤醒词，用户可能还要继续说指令）。
+SOCIAL_GREETING_PATTERNS = {
+    "你好", "您好", "早上好", "下午好", "晚上好", "早安", "晚安",
+    "谢谢", "谢谢你", "谢谢啦", "多谢", "感谢",
+    "再见", "拜拜", "回见",
+    "辛苦了", "麻烦你了",
+    "小雅你好", "在吗", "你在吗",
+}
+
+
+def _is_social_greeting(query: str) -> bool:
+    q = (query or "").strip().rstrip("。！？!?~～，,")
+    return q in SOCIAL_GREETING_PATTERNS
+
 
 @dataclass
 class ClassificationResult:
@@ -230,14 +328,8 @@ class IntentClassifier:
         conversation_state: ConversationState,
     ) -> ClassificationResult:
         """对用户输入进行分类，生成结构化分析结果与回复。"""
-        # 先运行规则引擎，获取可能的高置信度提示意图。
-        rule_result = run_rules(query, meta)
-        logger.debug(
-            "rule_result",
-            session_id=session_id,
-            rule_intent=getattr(rule_result, "intent_code", None),
-            rule_target=getattr(rule_result, "target", None),
-        )
+        # 默认由大模型完成意图与指令识别；规则仅作为“模型不可用/无输出”时的兜底。
+        rule_result: Optional[RuleResult] = None
 
         llm_response_text = ""
         llm_parsed: dict[str, Any] = {}
@@ -245,7 +337,7 @@ class IntentClassifier:
         try:
             # 汇总对话历史，保证模型理解当前上下文。
             messages = conversation_state.as_messages()
-            reference_message = self._build_reference_message(query, rule_result, meta, conversation_state)
+            reference_message = self._build_reference_message(query, None, meta, conversation_state)
             if reference_message:
                 messages.append({"role": "assistant", "content": reference_message})
             messages.append({"role": "user", "content": query})
@@ -253,7 +345,7 @@ class IntentClassifier:
             llm_response_text, llm_parsed = await self._llm_client.chat(
                 system_prompt=self._system_prompt,
                 messages=messages,
-                response_format={"type": "json_object"},
+                overrides={"thinking": {"type": "disabled"}},
             )
             if isinstance(llm_parsed, dict):
                 llm_reply = (llm_parsed.get("reply") or "").strip()
@@ -266,7 +358,38 @@ class IntentClassifier:
         except Exception as exc:  # noqa: BLE001
             logger.exception("LLM 调用失败，采用规则兜底", error=str(exc))
 
+        candidate_rule_result = run_rules(query, meta)
+        llm_has_output = isinstance(llm_parsed, dict) and bool(llm_parsed)
+        # 若大模型无任何结构化输出（例如离线/被禁用/返回空对象），使用规则作为兜底。
+        if not llm_has_output:
+            rule_result = candidate_rule_result
+            logger.debug(
+                "rule_result_fallback",
+                session_id=session_id,
+                rule_intent=getattr(rule_result, "intent_code", None),
+                rule_target=getattr(rule_result, "target", None),
+            )
+        # 大模型有输出时：仅对“高确定性白名单意图”引入规则结果用于纠偏/补全
+        elif (
+            candidate_rule_result is not None
+            and candidate_rule_result.intent_code in SAFE_RULE_MERGE_INTENTS
+        ):
+            rule_result = candidate_rule_result
+            logger.debug(
+                "rule_result_merge",
+                session_id=session_id,
+                rule_intent=getattr(rule_result, "intent_code", None),
+                rule_target=getattr(rule_result, "target", None),
+            )
+
         function_analysis, intent_code, merge_meta = self._merge_results(rule_result, llm_parsed, query)
+        # 对“音量/亮度”类指令，线上仅看 target 执行；因此需要对 target 做强约束纠偏，
+        # 避免模型 reply 正确但结构化字段不符合规则导致误执行。
+        self._coerce_settings_target(
+            query=query,
+            function_analysis=function_analysis,
+            candidate_rule_result=candidate_rule_result,
+        )
         await self._resolve_user_target(
             query=query,
             function_analysis=function_analysis,
@@ -278,15 +401,30 @@ class IntentClassifier:
             query=query,
             function_analysis=function_analysis,
         )
+        self._apply_toc_contract(
+            query=query,
+            intent_code=intent_code,
+            function_analysis=function_analysis,
+        )
         reply_message = llm_reply or ""
+        if not function_analysis.get("need_clarify") and (
+            llm_parsed.get("need_clarify") or llm_parsed.get("clarify_message")
+        ):
+            reply_message = ""
 
         if self._should_clarify(function_analysis):
             function_analysis["need_clarify"] = True
-            if function_analysis.get("clarify_message"):
-                reply_message = function_analysis["clarify_message"]
-            else:
-                # 不做本地兜底澄清，完全依赖 LLM 提供，若为空则保持空
-                function_analysis["clarify_message"] = None
+            clarify_message = (function_analysis.get("clarify_message") or "").strip()
+            if not clarify_message or clarify_message == "我还不太确定您的意思，您可以再具体说说想做什么吗？":
+                clarify_message = self._build_local_clarify_message(
+                    query=query,
+                    function_analysis=function_analysis,
+                    conversation_state=conversation_state,
+                    candidate_rule_result=candidate_rule_result,
+                )
+                function_analysis["clarify_message"] = clarify_message
+                self._append_reasoning_marker(function_analysis, "local_clarify_fallback")
+            reply_message = clarify_message or reply_message
         else:
             function_analysis.setdefault("need_clarify", False)
             if not reply_message:
@@ -337,6 +475,9 @@ class IntentClassifier:
                 "降温",
                 "气温",
                 "温度",
+                "几度",
+                "多少度",
+                "℃",
                 "湿度",
                 "风力",
                 "刮风",
@@ -392,6 +533,24 @@ class IntentClassifier:
             last_tip = getattr(conversation_state, "clarify_message", None)
             if isinstance(last_tip, str) and last_tip.strip():
                 hints.append(f"- 上轮澄清提示：{last_tip.strip()}")
+            # 注入上一轮意图分析，帮助 LLM 延续多轮上下文
+            last_fa = getattr(conversation_state, "last_function_analysis", None)
+            if isinstance(last_fa, dict) and conversation_state.pending_clarification:
+                last_result = (last_fa.get("result") or "").strip()
+                last_target = (last_fa.get("target") or "").strip()
+                last_event = (last_fa.get("event") or "").strip()
+                if last_result:
+                    hints.append(f"- 上轮识别功能：{last_result}")
+                if last_target:
+                    hints.append(f"- 上轮 target：{last_target}")
+                if last_event:
+                    hints.append(f"- 上轮事件：{last_event}")
+                # 告知 LLM 缺失什么信息
+                if last_result in {"新增闹钟", "新增提醒"} and not last_target:
+                    hints.append("- 上轮待补充：具体时间")
+                elif last_result and not last_target:
+                    hints.append("- 上轮待补充：目标对象")
+                hints.append("- 若用户在补充缺失信息，请继续使用上轮意图，仅补全缺失部分。")
         base_time = now_e8()
         weekday_labels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
         if need_time or need_weather:
@@ -668,20 +827,54 @@ class IntentClassifier:
                 intent_code = IntentCode.ENTERTAINMENT_NEXT_TRACK
                 result = "下一首"
 
-        if (intent_code == IntentCode.CHAT or result == "语音陪伴或聊天") and not _contains_chat_keyword(query):
-            intent_code = IntentCode.UNKNOWN
-            result = "未知指令"
-            function_analysis = {
-                "result": result,
-                "target": "",
-                "event": None,
-                "status": None,
-                "confidence": 0.0,
-                "need_clarify": True,
-                "clarify_message": "我可以陪您聊天，也可以帮您处理天气、用药提醒、健康监测、家政等需求，请再具体说说您的想法？",
-                "reasoning": "缺少明确聊天关键词，需澄清意图。",
-            }
-            return function_analysis, intent_code, {}
+        if intent_code == IntentCode.CHAT or result == "语音陪伴或聊天":
+            if _contains_chat_keyword(query):
+                # 显式聊天请求 → 保持 CHAT 意图，走聊天功能
+                pass
+            elif _is_social_greeting(query):
+                # 社交问候 → 直接回复，不触发功能、不澄清
+                function_analysis = {
+                    "result": "",
+                    "target": "",
+                    "event": None,
+                    "status": None,
+                    "confidence": 0.85,
+                    "need_clarify": False,
+                    "clarify_message": None,
+                    "reasoning": "social_greeting",
+                }
+                return function_analysis, intent_code, {}
+            else:
+                # LLM 判定为对话型 — 检查是否有可用的 reply
+                llm_chat_reply = (llm_parsed.get("reply") or "").strip()
+                if llm_chat_reply:
+                    # 有 reply → 第三层：直接回答（问答/闲聊）
+                    function_analysis = {
+                        "result": "",
+                        "target": "",
+                        "event": None,
+                        "status": None,
+                        "confidence": 0.80,
+                        "need_clarify": False,
+                        "clarify_message": None,
+                        "reasoning": "chat_or_qa_with_reply",
+                    }
+                    return function_analysis, intent_code, {}
+                else:
+                    # 无 reply → 第二层：澄清
+                    intent_code = IntentCode.UNKNOWN
+                    result = ""
+                    function_analysis = {
+                        "result": "",
+                        "target": "",
+                        "event": None,
+                        "status": None,
+                        "confidence": 0.0,
+                        "need_clarify": True,
+                        "clarify_message": "我可以陪您聊天，也可以帮您处理天气、用药提醒、健康监测、家政等需求，请再具体说说您的想法？",
+                        "reasoning": "缺少明确意图，需澄清。",
+                    }
+                    return function_analysis, intent_code, {}
 
         candidate_parsed_time = None
         candidate_time_text = ""
@@ -711,9 +904,32 @@ class IntentClassifier:
         if time_confidence is not None:
             time_confidence = max(0.0, min(time_confidence, 1.0))
 
+        filled_time_from_rule = False
+        # 闹钟/提醒：若 LLM 未给出 parsed_time，但规则已解析出 target，则补齐 parsed_time
+        if (
+            not parsed_time_value
+            and rule_result
+            and rule_result.intent_code in {IntentCode.ALARM_CREATE, IntentCode.ALARM_REMINDER}
+            and rule_result.target
+        ):
+            candidate_iso = str(rule_result.target).strip()
+            try:
+                datetime.strptime(candidate_iso, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                candidate_iso = ""
+            if candidate_iso:
+                parsed_time_value = candidate_iso
+                filled_time_from_rule = True
+                if not time_text_value:
+                    time_text_value = "规则解析"
+                if time_confidence is None:
+                    time_confidence = 0.92
+
         time_source = "none"
         if parsed_time_value:
-            if time_confidence is not None:
+            if filled_time_from_rule:
+                time_source = "rule"
+            elif time_confidence is not None:
                 time_source = "llm" if time_confidence >= TIME_CONFIDENCE_THRESHOLD else "llm_low"
             else:
                 time_source = "llm"
@@ -780,7 +996,12 @@ class IntentClassifier:
         if confidence is None and rule_result and rule_result.confidence is not None:
             confidence = rule_result.confidence
         if confidence is None:
-            confidence = 0.6
+            if intent_code in ACTIONABLE_INTENTS:
+                confidence = 0.8
+            elif intent_code == IntentCode.UNKNOWN:
+                confidence = 0.3
+            else:
+                confidence = 0.65
         try:
             confidence = float(confidence)
         except (TypeError, ValueError):
@@ -849,21 +1070,36 @@ class IntentClassifier:
         reasoning = "；".join(normalized_reasoning) or None
 
         is_health = self._is_health_related(query, advice, result)
+        # 若大模型给出了健康建议但意图落在 UNKNOWN，则按“健康科普”承载建议内容，
+        # 避免前端无法路由或误触发澄清流程。
+        if advice and is_health and intent_code == IntentCode.UNKNOWN:
+            intent_code = IntentCode.HEALTH_EDUCATION
+            definition = INTENT_DEFINITIONS[intent_code]
+            result = definition.result
+            if not target:
+                target = query.strip()
+            reasoning_parts.append("health_advice_promote")
+
         if is_health and intent_code not in ACTIONABLE_INTENTS and not safety_notice:
             safety_notice = DEFAULT_SAFETY_NOTICE
 
         # 模糊症状：交给澄清流程，不直接归入健康科普/监测
         if self._is_vague_symptom_query(query):
-            if intent_code not in WEATHER_INTENT_CODES and intent_code not in ACTIONABLE_INTENTS:
+            if (
+                intent_code == IntentCode.UNKNOWN
+                and not advice
+                and not safety_notice
+                and intent_code not in WEATHER_INTENT_CODES
+                and intent_code not in ACTIONABLE_INTENTS
+            ):
                 intent_code = IntentCode.UNKNOWN
                 result = ""
                 need_clarify = True
                 advice = None
                 safety_notice = None
-                # 不写死澄清话术，由上游 LLM reply/clarify_message 生成；若 LLM 未给出则保持空
                 reasoning_parts.append("vague_symptom_clarify")
 
-        # UNKNOWN 或低置信候选：保持 need_clarify，但不生成本地澄清文案
+        # UNKNOWN 或低置信候选：保持 need_clarify；若缺少澄清话术则补一个通用版本
         if intent_code == IntentCode.UNKNOWN:
             need_clarify = True
         if selected_candidate and selected_candidate.get("confidence", 0.0) < self._confidence_threshold and intent_code not in ACTIONABLE_INTENTS:
@@ -872,6 +1108,9 @@ class IntentClassifier:
         if intent_code in ACTIONABLE_INTENTS and confidence >= self._confidence_threshold and not time_uncertain:
             need_clarify = False
             clarify_message = None
+
+        if need_clarify and not clarify_message:
+            clarify_message = ""
 
         if result and result not in self._allowed_results:
             reasoning = (reasoning + "；" if reasoning else "") + "result 已校正为允许列表。"
@@ -1008,6 +1247,154 @@ class IntentClassifier:
             rule_conf = 0.95
 
         return rule_conf + RULE_PROMOTION_TOLERANCE >= candidate_conf
+
+    def _coerce_settings_target(
+        self,
+        *,
+        query: str,
+        function_analysis: Dict[str, Any],
+        candidate_rule_result: Optional[RuleResult],
+    ) -> None:
+        """对音量/亮度的 target 做强约束纠偏，保证线上可直接执行。"""
+        result = (function_analysis.get("result") or "").strip()
+        if result not in SETTINGS_RESULTS:
+            return
+
+        text = (query or "").strip()
+        if not text:
+            return
+
+        raw_target = function_analysis.get("target")
+        target = str(raw_target).strip() if raw_target is not None else ""
+
+        changed = False
+        markers: list[str] = []
+
+        def _append_marker(marker: str) -> None:
+            if marker and marker not in markers:
+                markers.append(marker)
+
+        def _set_target(new_target: str, marker: str) -> None:
+            nonlocal changed, target
+            new_target = (new_target or "").strip()
+            if new_target and new_target != target:
+                function_analysis["target"] = new_target
+                target = new_target
+                changed = True
+                _append_marker(marker)
+
+        def _set_result(new_result: str, marker: str) -> None:
+            nonlocal changed, result
+            new_result = (new_result or "").strip()
+            if new_result and new_result != result and new_result in SETTINGS_RESULTS:
+                function_analysis["result"] = new_result
+                result = new_result
+                changed = True
+                _append_marker(marker)
+
+        def _boost_confidence(boost: float = 0.85) -> None:
+            nonlocal changed
+            existing = function_analysis.get("confidence")
+            try:
+                numeric_conf = float(existing) if existing is not None else 0.0
+            except (TypeError, ValueError):
+                numeric_conf = 0.0
+            if numeric_conf < boost:
+                function_analysis["confidence"] = boost
+                changed = True
+
+        def _finalize() -> None:
+            """写回标记与置信度，便于排查线上误判。"""
+            if markers:
+                reasoning = (function_analysis.get("reasoning") or "").strip()
+                marker_text = "；".join(markers)
+                function_analysis["reasoning"] = f"{reasoning}；{marker_text}" if reasoning else marker_text
+            if changed:
+                _boost_confidence()
+
+        abs_value = extract_settings_absolute_value(text)
+        if abs_value is not None:
+            # 绝对设置：强制 target=0~100 的数字字符串（不带 %）
+            _set_target(abs_value, f"settings_target=absolute:{abs_value}")
+            # 若规则也解析到绝对值且给出了方向词，则允许用规则结果纠正“调高/调低”
+            if (
+                candidate_rule_result
+                and candidate_rule_result.result in SETTINGS_RESULTS
+                and str(candidate_rule_result.target or "").strip() == abs_value
+            ):
+                _set_result(candidate_rule_result.result, f"settings_result=rule:{candidate_rule_result.result}")
+            _finalize()
+            return
+
+        desired_sign = "+" if result in SETTINGS_UP_RESULTS else "-"
+
+        explicit_delta = extract_settings_relative_delta(text)
+        if explicit_delta is not None and explicit_delta <= 0:
+            explicit_delta = None
+        fallback_amount = explicit_delta or 10
+
+        def _format_delta(sign: str, amount: int) -> str:
+            amount = max(0, min(int(amount), 100))
+            return f"{sign}{amount}"
+
+        def _is_valid_absolute_value(value: str) -> bool:
+            if not value.isdigit():
+                return False
+            try:
+                parsed = int(value)
+            except ValueError:
+                return False
+            return 0 <= parsed <= 100
+
+        def _parse_delta(value: str) -> Optional[tuple[str, int]]:
+            match = re.fullmatch(r"(?P<sign>[+-])\s*(?P<num>\d{1,3})\s*(?:[%％])?", value)
+            if not match:
+                return None
+            sign = match.group("sign")
+            try:
+                num = int(match.group("num"))
+            except (TypeError, ValueError):
+                return None
+            if not (0 <= num <= 100):
+                return None
+            return sign, num
+
+        # 相对调节：target 必须是 “+N/-N”，并且 result 与符号保持一致。
+        if not target:
+            _set_target(_format_delta(desired_sign, fallback_amount), "settings_target=delta_default")
+            _finalize()
+            return
+
+        target_candidate = target.replace("％", "%").strip()
+
+        parsed_delta = _parse_delta(target_candidate)
+        if parsed_delta:
+            sign, amount = parsed_delta
+            normalized = _format_delta(sign, amount)
+            _set_target(normalized, f"settings_target=delta_normalized:{normalized}")
+            # 符号与 result 不一致时，以符号为准纠正 result（避免 target=-10 但 result=调高）
+            if sign == "+" and result in SETTINGS_DOWN_RESULTS:
+                _set_result("声音调高" if result.startswith("声音") else "亮度调高", "settings_result=sign_fix")
+            elif sign == "-" and result in SETTINGS_UP_RESULTS:
+                _set_result("声音调低" if result.startswith("声音") else "亮度调低", "settings_result=sign_fix")
+            _finalize()
+            return
+
+        # 模型有时会输出 “20%/30” 等绝对值，但语句并非绝对设置；为避免线上误当绝对值执行，
+        # 这里统一回退为相对幅度（静音/最大音量通常会在 result 上体现为调低/调高，且 target 也应为 0/100）。
+        if _is_valid_absolute_value(target_candidate):
+            is_plausible_extreme = (
+                (target_candidate == "0" and result in SETTINGS_DOWN_RESULTS)
+                or (target_candidate == "100" and result in SETTINGS_UP_RESULTS)
+            )
+            if not is_plausible_extreme:
+                _set_target(_format_delta(desired_sign, fallback_amount), "settings_target=delta_from_absolute")
+            _finalize()
+            return
+
+        # 兜底：任何不符合规范的 target 都回退为默认幅度
+        _set_target(_format_delta(desired_sign, fallback_amount), "settings_target=delta_fallback")
+        _finalize()
 
     async def _resolve_user_target(
         self,
@@ -1204,6 +1591,107 @@ class IntentClassifier:
             return False
         return confidence < self._confidence_threshold
 
+    def _append_reasoning_marker(self, function_analysis: Dict[str, Any], marker: str) -> None:
+        reasoning = (function_analysis.get("reasoning") or "").strip()
+        if not marker:
+            return
+        if marker in reasoning:
+            return
+        function_analysis["reasoning"] = f"{reasoning}；{marker}" if reasoning else marker
+
+    def _build_local_clarify_message(
+        self,
+        *,
+        query: str,
+        function_analysis: Dict[str, Any],
+        conversation_state: ConversationState,
+        candidate_rule_result: Optional[RuleResult],
+    ) -> str:
+        text = (query or "").strip()
+        rounds = 1
+        if conversation_state and getattr(conversation_state, "pending_clarification", False):
+            rounds = min((getattr(conversation_state, "clarify_rounds", 0) or 0) + 1, 3)
+
+        def finalize(options: list[str], best_guess: str = "") -> str:
+            clean_options = [item.strip() for item in options if item and item.strip()]
+            guess = (best_guess or (clean_options[0] if clean_options else "")).strip()
+            if rounds >= 3:
+                if clean_options:
+                    numbered = "，".join(f"回复{idx + 1}{item}" for idx, item in enumerate(clean_options[:3]))
+                    if guess:
+                        return f"我先按最像的理解，您可能是想{guess}。如果不是，请{numbered}。"
+                    return f"我先帮您缩小范围，请{numbered}。"
+                return "我先帮您缩小范围：回复1直接回答问题，回复2打开小雅功能，回复3继续描述一下。"
+            if len(clean_options) >= 2:
+                return f"您是想{clean_options[0]}，还是{clean_options[1]}？"
+            if clean_options:
+                return f"您是想{clean_options[0]}吗？"
+            return "我还没完全听明白。您是想让我直接回答问题，还是帮您打开某个小雅功能？可以再说具体一点。"
+
+        rule_guess = ""
+        if candidate_rule_result and getattr(candidate_rule_result, "result", None):
+            rule_guess = f"打开{candidate_rule_result.result}"
+
+        if any(token in text for token in ["眯一会", "亮着", "屏幕先灭", "先灭", "熄灭", "别亮了"]):
+            return finalize(["帮您息屏", "把屏幕亮度调低一点"], "帮您息屏")
+        if any(token in text for token in ["天气", "下雨", "带伞", "雨伞", "雨具", "阵雨", "晒", "冷不冷", "热不热", "潮", "外面"]):
+            return finalize(["查天气", "查日期或节日"], rule_guess or "查天气")
+        if any(token in text for token in ["几点", "现在时间", "当前时间", "啥时辰", "什么时辰", "时辰"]):
+            return finalize(["报当前时间", "查日期或农历"], rule_guess or "报当前时间")
+        if any(token in text for token in ["农历", "黄历", "节气", "节日", "腊八", "几号", "日期"]):
+            return finalize(["查日期和万年历", "报当前时间"], rule_guess or "查日期和万年历")
+        if any(token in text for token in ["血压", "血糖", "血氧", "心率", "睡眠", "体温", "尿酸", "血脂"]):
+            monitor_guess = rule_guess or "打开健康监测"
+            return finalize([monitor_guess, "先听相关健康建议"], monitor_guess)
+        if any(token in text for token in ["评估", "体况", "画像", "指数", "总结", "留个档", "留档"]):
+            best_guess = "看健康画像" if any(token in text for token in ["画像", "总结", "留个档", "留档"]) else "做健康评估"
+            return finalize(["做健康评估", "看健康画像"], rule_guess or best_guess)
+        if any(token in text for token in ["专家", "名医", "医生", "大夫"]) and any(token in text for token in ["远程", "预约", "问问", "看看", "看病", "老毛病"]):
+            return finalize(["预约名医问诊", "联系家庭医生"], rule_guess or "预约名医问诊")
+        if any(token in text for token in ["相册", "照片", "拍的", "拍的小"]):
+            return finalize(["打开相册看看照片"], rule_guess or "打开相册看看照片")
+        if any(token in text for token in ["闺女", "儿子", "女儿", "家人", "老伴", "妈妈", "爸爸", "外孙", "孙女", "语音", "视频", "打给"]):
+            best_guess = "发起视频通话" if "视频" in text else "发起语音通话"
+            return finalize(["发起语音通话", "发起视频通话"], rule_guess or best_guess)
+        if any(token in text for token in ["评书", "戏曲", "听书", "小说", "音乐", "听歌", "娱乐"]):
+            best_guess = "听评书或戏曲" if any(token in text for token in ["评书", "戏曲"]) else "听书" if any(token in text for token in ["听书", "小说"]) else "听音乐"
+            return finalize(["听评书或戏曲", "听书", "听音乐"], rule_guess or best_guess)
+        if any(token in text for token in ["商城", "买", "购买", "零食", "拐杖", "商品"]):
+            best_guess = "查看健康食疗产品" if any(token in text for token in ["零食"]) else "查看适老化用品" if any(token in text for token in ["拐杖"]) else "打开商城看看"
+            return finalize(["打开商城看看", "查看适老化用品", "查看健康食疗产品"], rule_guess or best_guess)
+        if any(token in text for token in ["头晕", "心慌", "过敏", "咳嗽", "发热", "发烧", "疼", "痛", "不舒服"]):
+            return finalize(["直接说说健康建议", "打开健康监测功能", "联系医生咨询"], "直接说说健康建议")
+        if rule_guess:
+            return finalize([rule_guess, "直接回答问题", "换个小雅功能"], rule_guess)
+        return finalize(["直接回答问题", "打开小雅功能", "继续描述一下"], "直接回答问题")
+
+    def _apply_toc_contract(
+        self,
+        query: str,
+        intent_code: IntentCode,
+        function_analysis: Dict[str, Any],
+    ) -> None:
+        """将内部意图归一到 ToC 面向前端的公开返回契约。"""
+        if intent_code != IntentCode.HEALTH_EDUCATION:
+            return
+        if not self._is_health_education_broadcast_only_query(query):
+            return
+        function_analysis["result"] = ""
+        function_analysis["need_clarify"] = False
+        function_analysis["clarify_message"] = None
+
+    def _is_health_education_broadcast_only_query(self, query: str) -> bool:
+        text = (query or "").strip()
+        if not text:
+            return False
+        content_tokens = ["打开", "进入", "查看", "打开页面", "打开科普", "播放", "看", "看看", "课程", "视频", "教学", "学"]
+        if any(token in text for token in content_tokens):
+            return False
+        question_tokens = ["讲讲", "怎么", "怎么办", "如何", "判断", "知识", "建议", "小贴士", "注意点啥", "说说", "了解", "吃什么", "注意什么"]
+        if any(token in text for token in question_tokens):
+            return True
+        return "健康科普" in text and "页面" not in text
+
     def _default_reply(self, function_analysis: Dict[str, Any]) -> str:
         """当大模型未返回 reply 字段时的兜底自然语言响应。"""
         result = function_analysis.get("result")
@@ -1212,12 +1700,51 @@ class IntentClassifier:
         event = (function_analysis.get("event") or "").strip()
         status = (function_analysis.get("status") or "").strip()
         target = (function_analysis.get("target") or "").strip()
+        parts = [part for part in [advice, safety] if part]
         if function_analysis.get("need_clarify"):
             clarify = function_analysis.get("clarify_message") or ""
             parts = [part for part in [advice, safety, clarify] if part]
             return " ".join(parts).strip()
-        parts = [part for part in [advice, safety] if part]
-        schedule_bits = [bit for bit in [status, target] if bit]
+        if result == "取消闹钟":
+            if target:
+                parts.append(f"好的，我来帮您取消{target}的闹钟。")
+            else:
+                parts.append("您想取消哪一个闹钟？")
+            return " ".join(part for part in parts if part).strip()
+        if result == "用药计划":
+            if target and function_analysis.get("parsed_time"):
+                parts.append(f"好的，我已为您添加{target}的用药计划。")
+            else:
+                parts.append("好的，我已为您打开用药计划。")
+            return " ".join(part for part in parts if part).strip()
+        if result == "小雅预约":
+            parts.append("好的，我已为您打开小雅预约。")
+            return " ".join(part for part in parts if part).strip()
+        if result == "小雅电影":
+            parts.append("好的，我已为您打开小雅电影。")
+            return " ".join(part for part in parts if part).strip()
+        if result == "娱乐管家":
+            parts.append("好的，我已为您打开娱乐管家。")
+            return " ".join(part for part in parts if part).strip()
+        if result == "家庭医生":
+            if target:
+                parts.append(f"好的，我来帮您联系{target}的家庭医生。")
+            else:
+                parts.append("好的，我已为您打开家庭医生。")
+            return " ".join(part for part in parts if part).strip()
+        if result == "小雅教育":
+            if target:
+                parts.append(f"好的，我已为您打开{target}相关的小雅教育内容。")
+            else:
+                parts.append("好的，我已为您打开小雅教育。")
+            return " ".join(part for part in parts if part).strip()
+        if result == "健康科普":
+            parts.append("好的，我已为您打开健康科普。")
+            return " ".join(part for part in parts if part).strip()
+        if not result and target:
+            parts.append(f"我来给您讲讲{target}。")
+            return " ".join(part for part in parts if part).strip()
+        schedule_bits = [bit for bit in [status, target] if bit] if result in {"新增闹钟"} else []
         schedule_desc = "、".join(schedule_bits)
         if result:
             if schedule_desc and event:

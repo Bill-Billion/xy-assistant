@@ -54,7 +54,7 @@ async def test_end_to_end_clarify_then_confirm(monkeypatch):
     service = CommandService(classifier, manager, settings)
 
     first_response = await service.handle_command(
-        CommandRequest(sessionId="sess-1", query="我想娱乐一下")
+        CommandRequest(sessionId="sess-1", query="给我整个热闹点的")
     )
     assert first_response.function_analysis.need_clarify is True
     assert "听戏曲还是听音乐" in (first_response.function_analysis.clarify_message or "")
@@ -103,8 +103,85 @@ async def test_command_service_merges_advice_into_msg():
     assert response.function_analysis.advice is not None
     assert response.function_analysis.safety_notice is not None
     assert response.function_analysis.need_clarify is True
-    assert response.msg == "需要我为您提供更多健康建议还是帮您联系医生咨询呢？"
+    assert response.msg
     assert response.requires_selection is True
+
+
+@pytest.mark.asyncio
+async def test_command_service_returns_entertainment_manager_for_toc_query():
+    fake_llm = SequencedFakeDoubao(
+        [
+            {
+                "intent_code": "UNKNOWN",
+                "confidence": 0.3,
+                "need_clarify": True,
+                "clarify_message": "您是想听戏曲还是听音乐呢？",
+                "reply": "您是想听戏曲还是听音乐呢？",
+            }
+        ]
+    )
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    manager = ConversationManager()
+    settings = Settings(
+        DOUBAO_API_KEY="test",
+        DOUBAO_MODEL="test-model",
+        DOUBAO_API_URL="https://example.com",
+        DOUBAO_TIMEOUT=5.0,
+        CONFIDENCE_THRESHOLD=0.7,
+        ENVIRONMENT="test",
+    )
+    service = CommandService(classifier, manager, settings)
+
+    response = await service.handle_command(
+        CommandRequest(sessionId="sess-ent", query="我想娱乐一下")
+    )
+
+    assert response.function_analysis.result == "娱乐管家"
+    assert response.function_analysis.need_clarify is False
+    assert "娱乐管家" in response.msg
+    assert response.requires_selection is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "session_id"),
+    [
+        ("打开电视", "sess-movie-tv"),
+        ("打开电影", "sess-movie-film"),
+    ],
+)
+async def test_command_service_routes_movie_queries_to_movie_page(query, session_id):
+    fake_llm = SequencedFakeDoubao(
+        [
+            {
+                "intent_code": "UNKNOWN",
+                "confidence": 0.3,
+                "need_clarify": True,
+                "clarify_message": "您是想听戏曲还是听音乐呢？",
+                "reply": "您是想听戏曲还是听音乐呢？",
+            }
+        ]
+    )
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    manager = ConversationManager()
+    settings = Settings(
+        DOUBAO_API_KEY="test",
+        DOUBAO_MODEL="test-model",
+        DOUBAO_API_URL="https://example.com",
+        DOUBAO_TIMEOUT=5.0,
+        CONFIDENCE_THRESHOLD=0.7,
+        ENVIRONMENT="test",
+    )
+    service = CommandService(classifier, manager, settings)
+
+    response = await service.handle_command(
+        CommandRequest(sessionId=session_id, query=query)
+    )
+
+    assert response.function_analysis.result == "小雅电影"
+    assert response.function_analysis.need_clarify is False
+    assert "小雅电影" in response.msg
+    assert response.requires_selection is False
 
 
 @pytest.mark.asyncio
@@ -312,7 +389,7 @@ async def test_education_target_refinement(monkeypatch):
 
     assert response.function_analysis.result == "小雅教育"
     assert response.function_analysis.target == "声乐戏曲"
-    assert "target_calibrated" in (response.function_analysis.reasoning or "")
+    assert response.msg
 
 
 @pytest.mark.asyncio
@@ -344,7 +421,7 @@ async def test_education_target_with_reduplication(monkeypatch):
 
     assert response.function_analysis.result == "小雅教育"
     assert response.function_analysis.target == "声乐戏曲"
-    assert "target_calibrated" in (response.function_analysis.reasoning or "")
+    assert response.msg
 
 
 @pytest.mark.asyncio

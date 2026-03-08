@@ -12,6 +12,7 @@ class CommandRequest(BaseModel):
     user: Optional[str] = None
     # 前端可直接传入当前定位城市，天气优先级：query > meta.city > 该字段 > 默认
     city: Optional[str] = None
+    stream: bool = Field(default=False, description="是否启用 SSE 流式输出")
 
     model_config = {
         "populate_by_name": True,

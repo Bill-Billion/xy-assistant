@@ -1,5 +1,6 @@
 import pytest
 
+import app.services.weather_service as weather_service_module
 from app.services.weather_service import GeoPoint, WeatherAPIError, WeatherService
 
 
@@ -31,6 +32,7 @@ def base_settings():
             "weather_default_lat": 28.22778,
             "weather_default_lon": 112.93886,
             "weather_cache_ttl": 60,
+            "weather_realtime_cache_ttl": 60,
             "weather_geo_cache_ttl": 60,
             "weather_llm_enabled": False,
             "weather_llm_confidence_threshold": 0.6,
@@ -120,6 +122,66 @@ async def test_fetch_calls_api_when_needed(monkeypatch, base_settings):
     detail = context.to_function_detail()
     assert detail["location_source"] in {"llm", "llm_low"}
     assert detail["forecast"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_strict_realtime_bypasses_stale_cache(monkeypatch, base_settings):
+    class SequencedWeatherClient:
+        def __init__(self, payloads):
+            self._payloads = payloads
+            self.calls = 0
+
+        async def get_forecast(self, latitude, longitude, need_more_day=True, need_index=False):
+            payload = self._payloads[min(self.calls, len(self._payloads) - 1)]
+            self.calls += 1
+            return payload
+
+    payload_1 = {
+        "time": "20251027120000",
+        "now": {"weather": "多云", "temperature": "19", "sd": "60%"},
+        "f1": {"day": "20251027", "day_weather": "多云", "night_weather": "多云"},
+        "ret_code": 0,
+    }
+    payload_2 = {
+        "time": "20251027121000",
+        "now": {"weather": "多云", "temperature": "21", "sd": "58%"},
+        "f1": {"day": "20251027", "day_weather": "多云", "night_weather": "多云"},
+        "ret_code": 0,
+    }
+    client = SequencedWeatherClient([payload_1, payload_2])
+    base_settings.weather_realtime_cache_ttl = 50
+    service = WeatherService(base_settings, client=client, llm_client=None)
+    monkeypatch.setattr(WeatherService, "_geocode", fake_geocode)
+
+    monotonic_ts = {"t": 100.0}
+    monkeypatch.setattr(weather_service_module.time, "monotonic", lambda: monotonic_ts["t"])
+
+    llm_info = {
+        "location": "成都",
+        "location_confidence": 0.9,
+        "target_date": "2025-10-27",
+        "needs_realtime_data": True,
+    }
+
+    context_1 = await service.fetch(
+        llm_info=llm_info,
+        summary="成都市当前多云。",
+        needs_realtime=True,
+        query="现在多少度",
+    )
+    assert context_1 is not None
+    assert client.calls == 1
+
+    # 模拟时间推移，超过 realtime ttl，应触发重新拉取
+    monotonic_ts["t"] = 200.0
+    context_2 = await service.fetch(
+        llm_info=llm_info,
+        summary="成都市当前多云。",
+        needs_realtime=True,
+        query="现在多少度",
+    )
+    assert context_2 is not None
+    assert client.calls == 2
 
 
 @pytest.mark.asyncio

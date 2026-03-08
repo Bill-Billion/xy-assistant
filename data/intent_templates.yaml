@@ -1,0 +1,354 @@
+WEATHER_TODAY:
+  limit: 60
+  base:
+    fields:
+      target: "今天"
+      confidence: 0.94
+    slots:
+      time_text: "今天"
+  histories:
+    - - role: user
+        content: "昨天出门没带伞，淋了一点雨。"
+      - role: assistant
+        content: "今天需要我先帮您查下天气吗？"
+  templates:
+    - id: weather_today_basic
+      text: "{greet}今天天气怎么样{ending}"
+      vary:
+        greet: ["", "小雅，", "你好，", "麻烦", "请问"]
+        ending: ["？", "啊？", "呢？", "呀？"]
+    - id: weather_today_city
+      text: "{greet}今天{city}天气如何{ending}"
+      vary:
+        greet: ["", "请问", "小雅，"]
+        city: ["长沙", "长沙市", "株洲", "广州", "我们这边"]
+        ending: ["？", "呀？", "呢？"]
+      slots:
+        location: "{city}"
+    - id: weather_today_activity
+      text: "今天下午适合{activity}吗？"
+      vary:
+        activity: ["出门散步", "带孙子出去玩", "晒太阳", "去公园逛逛"]
+      slots:
+        time_text: "今天下午"
+
+WEATHER_TOMORROW:
+  limit: 60
+  base:
+    fields:
+      target: "明天"
+      confidence: 0.93
+    slots:
+      time_text: "明天"
+  templates:
+    - id: weather_tomorrow_general
+      text: "明天的天气情况怎么样？"
+    - id: weather_tomorrow_city
+      text: "{greet}明天{city}冷不冷{ending}"
+      vary:
+        greet: ["", "请问", "小雅，"]
+        city: ["长沙", "株洲", "广州", "老家"]
+        ending: ["？", "呀？", "呢？"]
+      slots:
+        location: "{city}"
+    - id: weather_tomorrow_rain
+      text: "明天会不会下雨，需要带伞吗？"
+      slots:
+        topic: "降雨概率"
+
+WEATHER_SPECIFIC:
+  limit: 50
+  base:
+    fields:
+      confidence: 0.9
+  templates:
+    - id: weather_specific_date
+      text: "{date_phrase}的天气怎么样？"
+      vary:
+        date_phrase: ["本周五", "10月30日", "农历九月初十", "下周三"]
+      slots:
+        time_text: "{date_phrase}"
+        time_iso:
+          expr: "{date_phrase}"
+    - id: weather_specific_city
+      text: "{date_phrase}{city}天气如何，要不要带伞？"
+      vary:
+        date_phrase: ["下周三", "周末", "国庆那天"]
+        city: ["长沙", "上海", "北京"]
+      slots:
+        time_text: "{date_phrase}"
+        time_iso:
+          expr: "{date_phrase}"
+        location: "{city}"
+        topic: "出行"
+
+CALENDAR_GENERAL:
+  limit: 40
+  base:
+    fields:
+      confidence: 0.9
+    slots:
+      topic: "日期"
+  templates:
+    - id: calendar_today
+      text: "今天是几月几日，农历多少？"
+      slots:
+        time_text: "今天"
+        time_iso:
+          expr: "today"
+    - id: calendar_festival
+      text: "{date_phrase}是不是{festival}？"
+      vary:
+        date_phrase: ["下周一", "明天", "后天", "这个周末"]
+        festival: ["重阳节", "立冬", "春节", "中秋"]
+
+TIME_BROADCAST:
+  limit: 30
+  base:
+    fields:
+      confidence: 0.92
+  templates:
+    - id: time_now
+      text: "现在几点了？"
+      slots:
+        time_text: "当前时间"
+    - id: time_beijing
+      text: "小雅，现在是北京时间多少？"
+      slots:
+        time_text: "当前北京时间"
+
+ALARM_CREATE:
+  limit: 90
+  base:
+    fields:
+      result: "新增闹钟"
+      confidence: 0.95
+  templates:
+    - id: alarm_morning_event
+      text: "{prefix}订个明早{hour}点的闹钟提醒我{event_desc}"
+      vary:
+        prefix: ["帮我", "麻烦", "请"]
+        hour: ["6", "六", "7", "七"]
+        event_desc: ["晨跑", "起来锻炼", "喝杯温水"]
+      fields:
+        event: "{event_desc}"
+        time_iso_expr: "tomorrow {hour}:00"
+        target_expr: "tomorrow {hour}:00"
+    - id: alarm_relative
+      text: "提醒我{offset_desc}记得{event_desc}"
+      vary:
+        offset_desc: ["十分钟后", "半小时后", "两个小时后"]
+        event_desc: ["关火", "吃药", "把饭热热"]
+      fields:
+        event: "{event_desc}"
+        relative_target: "{offset_desc}"
+    - id: alarm_specific_day
+      text: "{prefix}下周一上午九点提醒我开组会"
+      vary:
+        prefix: ["", "请", "麻烦"]
+      fields:
+        event: "开组会"
+        time_iso_expr: "next monday 09:00"
+        target_expr: "next monday 09:00"
+
+ALARM_REMINDER:
+  limit: 80
+  base:
+    fields:
+      confidence: 0.94
+  templates:
+    - id: reminder_short
+      text: "提醒我{offset_desc}{event_desc}"
+      vary:
+        offset_desc: ["十五分钟后", "半小时后", "一小时后"]
+        event_desc: ["去开门", "查看汤锅", "喝杯水"]
+      fields:
+        event: "{event_desc}"
+        relative_target: "{offset_desc}"
+    - id: reminder_weekly
+      text: "每周三上午十点提醒我和女儿视频"
+      fields:
+        event: "和女儿视频"
+        status: "每周三"
+        time_iso_expr: "next wednesday 10:00"
+        target_expr: "next wednesday 10:00"
+
+HEALTH_MONITOR_BLOOD_PRESSURE:
+  limit: 70
+  base:
+    fields:
+      confidence: 0.96
+      target: ""
+    slots:
+      symptom: ""
+  templates:
+    - id: bp_self
+      text: "我想测一下血压。"
+    - id: bp_family
+      text: "帮我给{relative}测血压。"
+      vary:
+        relative: ["爸爸", "妈妈", "奶奶", "老伴", "老李"]
+      fields:
+        target: "{relative}"
+        slots:
+          person: "{relative}"
+    - id: bp_after_symptom
+      text: "最近头有点晕，再测一次血压看看。"
+      slots:
+        symptom: "头晕"
+
+HEALTH_EDUCATION:
+  limit: 70
+  base:
+    fields:
+      confidence: 0.88
+      target: ""
+    slots:
+      topic: ""
+  templates:
+    - id: health_advice_general
+      text: "熬夜后头晕怎么办？"
+      slots:
+        topic: "熬夜头晕处理"
+    - id: health_judgement
+      text: "怎么判断自己是不是{condition}？"
+      vary:
+        condition: ["高血压", "糖尿病", "高血脂", "骨质疏松"]
+      slots:
+        topic: "判断{condition}"
+    - id: health_prevent
+      text: "请科普一下如何预防{condition}"
+      vary:
+        condition: ["心梗", "中风", "肺炎", "跌倒"]
+      slots:
+        topic: "预防{condition}"
+
+HEALTH_DOCTOR_SPECIFIC:
+  limit: 50
+  base:
+    fields:
+      confidence: 0.93
+    slots:
+      person: ""
+  histories:
+    - - role: user
+        content: "我头有点晕。"
+      - role: assistant
+        content: "要不要帮您联系医生？"
+  templates:
+    - id: doctor_call
+      text: "帮我联系下{doctor}医生。"
+      vary:
+        doctor: ["王", "李", "陈", "赵", "高"]
+      fields:
+        target: "{doctor}医生"
+      slots:
+        person: "{doctor}医生"
+    - id: doctor_specialist
+      text: "请转接{doctor}主任，我想咨询一下。"
+      vary:
+        doctor: ["李", "周", "刘"]
+      fields:
+        target: "{doctor}主任"
+      slots:
+        person: "{doctor}主任"
+
+MEDICATION_REMINDER_CREATE:
+  limit: 60
+  base:
+    fields:
+      confidence: 0.94
+    slots:
+      product: ""
+  templates:
+    - id: medicine_daily
+      text: "新增一个每天吃{medicine}的计划。"
+      vary:
+        medicine: ["维生素D", "钙片", "降压药", "阿司匹林"]
+      fields:
+        target: "{medicine}"
+        event: "服用{medicine}"
+        status: "每天"
+      slots:
+        product: "{medicine}"
+        event: "服用{medicine}"
+        status: "每天"
+    - id: medicine_after_meal
+      text: "提醒我晚饭后吃{medicine}。"
+      vary:
+        medicine: ["降压药", "胃药", "糖尿病药"]
+      fields:
+        target: "{medicine}"
+        event: "吃{medicine}"
+      slots:
+        product: "{medicine}"
+        event: "吃{medicine}"
+        time_text: "晚饭后"
+
+FAMILY_DOCTOR_CALL_AUDIO:
+  limit: 40
+  base:
+    fields:
+      confidence: 0.92
+    slots:
+      person: ""
+  templates:
+    - id: family_doctor_call
+      text: "帮我给{person}医生打个电话。"
+      vary:
+        person: ["王", "李", "陈", "周", "赵"]
+      fields:
+        target: "{person}医生"
+      slots:
+        person: "{person}医生"
+    - id: family_doctor_audio
+      text: "联系一下{person}大夫语音沟通。"
+      vary:
+        person: ["刘", "吴", "何", "郑"]
+      fields:
+        target: "{person}大夫"
+      slots:
+        person: "{person}大夫"
+
+MALL_DIGITAL_HEALTH_ROBOT:
+  limit: 40
+  base:
+    fields:
+      confidence: 0.88
+  templates:
+    - id: mall_robot_buy
+      text: "我要购买数字健康机器人。"
+    - id: mall_robot_package
+      text: "数字健康机器人有哪些套餐？"
+    - id: mall_robot_consult
+      text: "推荐一下数字健康机器人，看看适合不适合我家。"
+
+CHAT:
+  limit: 50
+  base:
+    fields:
+      confidence: 0.85
+  templates:
+    - id: chat_lonely
+      text: "最近有点孤独，陪我聊聊。"
+    - id: chat_greet
+      text: "{greet}，我们聊会天吧。"
+      vary:
+        greet: ["小雅", "小雅你好", "亲爱的", "朋友"]
+    - id: chat_feelings
+      text: "心情不太好，想找人说说话。"
+
+UNKNOWN:
+  limit: 40
+  base:
+    fields:
+      confidence: 0.4
+      clarify_required: true
+      clarify_message: "我暂时还没有相关功能，不过可以为您提供健康或生活类帮助。"
+  templates:
+    - id: unknown_poem
+      text: "你能帮我写一首诗吗？"
+    - id: unknown_stock
+      text: "最近股市应该怎么投资比较好？"
+    - id: unknown_programming
+      text: "可以教我写一段编程代码吗？"

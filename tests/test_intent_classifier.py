@@ -75,7 +75,7 @@ async def test_classifier_uses_rule_for_alarm():
 
 
 @pytest.mark.asyncio
-async def test_classifier_low_confidence_triggers_clarify():
+async def test_classifier_promotes_entertainment_general_for_toc_query():
     fake_llm = FakeDoubaoClient(
         {
             "reply": "我不太确定，您是想听曲艺吗？",
@@ -93,7 +93,8 @@ async def test_classifier_low_confidence_triggers_clarify():
         meta={},
         conversation_state=state,
     )
-    assert result.function_analysis["need_clarify"] is True
+    assert result.function_analysis["result"] == "娱乐管家"
+    assert result.function_analysis["need_clarify"] is False
     assert result.reply_message
 
 
@@ -187,7 +188,7 @@ async def test_health_question_provides_advice_and_safety():
         meta={},
         conversation_state=state,
     )
-    assert outcome.function_analysis["result"] == "健康科普"
+    assert outcome.function_analysis["result"] == ""
     assert "头晕" in outcome.function_analysis["target"]
     assert outcome.function_analysis["advice"]
     assert outcome.function_analysis["safety_notice"]
@@ -241,7 +242,7 @@ async def test_classifier_prefers_llm_candidates_over_rules():
         conversation_state=state,
     )
 
-    assert outcome.function_analysis["result"] == "健康科普"
+    assert outcome.function_analysis["result"] == ""
     assert outcome.function_analysis["target"] == "高血压日常饮食"
     assert outcome.function_analysis["need_clarify"] is False
     assert "医生" in outcome.function_analysis["safety_notice"]
@@ -324,7 +325,7 @@ async def test_doctor_contact_audio():
         meta={},
         conversation_state=state,
     )
-    assert outcome.function_analysis["result"] == "家庭医生音频通话"
+    assert outcome.function_analysis["result"] == "家庭医生"
     assert "高医生" in outcome.function_analysis["target"]
     assert outcome.function_analysis["need_clarify"] is False
     assert outcome.function_analysis["advice"] is None
@@ -359,11 +360,11 @@ async def test_classifier_promotes_rule_for_doctor_contact():
         conversation_state=state,
     )
 
-    assert outcome.function_analysis["result"] == "家庭医生音频通话"
+    assert outcome.function_analysis["result"] == "家庭医生"
     assert "高医生" in outcome.function_analysis["target"]
     assert outcome.function_analysis["need_clarify"] is False
     assert outcome.function_analysis["advice"] is None
-    assert "rule_override=FAMILY_DOCTOR_CALL_AUDIO<-FAMILY_DOCTOR_GENERAL" in (
+    assert "rule_override=FAMILY_DOCTOR_CONTACT<-FAMILY_DOCTOR_GENERAL" in (
         outcome.function_analysis["reasoning"] or ""
     )
 
@@ -383,9 +384,10 @@ async def test_classifier_health_knowledge_query():
         meta={},
         conversation_state=state,
     )
-    assert outcome.function_analysis["result"] == "健康科普"
+    assert outcome.function_analysis["result"] == ""
     assert outcome.function_analysis["target"] == "判断高血压"
     assert outcome.function_analysis["need_clarify"] is False
+    assert "科普" in outcome.reply_message or "高血压" in outcome.reply_message
 
 
 @pytest.mark.asyncio
@@ -531,3 +533,319 @@ async def test_alarm_event_from_llm_override_rule():
     assert outcome.function_analysis["parsed_time"] == "2024-11-26 09:00:00"
     reasoning = outcome.function_analysis["reasoning"] or ""
     assert "alarm_details=llm" in reasoning
+
+
+@pytest.mark.asyncio
+async def test_settings_absolute_target_overrides_llm_delta():
+    """模型 reply 正确但 target 输出为 +/-10 时，应按“调到/设置为”纠正为绝对值。"""
+    fake_llm = FakeDoubaoClient(
+        {
+            "reply": "已将音量调整至20%。",
+            "intent_code": "SETTINGS_SOUND_UP",
+            "result": "声音调高",
+            "target": "-10",
+            "confidence": 0.9,
+        }
+    )
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    state = ConversationState(session_id="settings-abs")
+    outcome = await classifier.classify(
+        session_id="settings-abs",
+        query="把声音调到20%",
+        meta={},
+        conversation_state=state,
+    )
+    assert outcome.function_analysis["target"] == "20"
+
+
+@pytest.mark.asyncio
+async def test_settings_relative_query_rejects_llm_absolute_target():
+    """线上只看 target 执行：相对调节语句不应输出绝对值，避免误当“设置为20”。"""
+    fake_llm = FakeDoubaoClient(
+        {
+            "reply": "好的，已经为您把音量调大一些。",
+            "intent_code": "SETTINGS_SOUND_UP",
+            "result": "声音调高",
+            "target": "20",
+            "confidence": 0.9,
+        }
+    )
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    state = ConversationState(session_id="settings-rel")
+    outcome = await classifier.classify(
+        session_id="settings-rel",
+        query="把声音调大一点",
+        meta={},
+        conversation_state=state,
+    )
+    assert outcome.function_analysis["target"] == "+10"
+
+
+@pytest.mark.asyncio
+async def test_settings_target_sign_aligns_result():
+    """target 符号与 result 不一致时，以 target 为准纠正 result，避免结构化字段自相矛盾。"""
+    fake_llm = FakeDoubaoClient(
+        {
+            "reply": "好的，已为您把音量调小一些。",
+            "intent_code": "SETTINGS_SOUND_UP",
+            "result": "声音调高",
+            "target": "-10",
+            "confidence": 0.9,
+        }
+    )
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    state = ConversationState(session_id="settings-sign")
+    outcome = await classifier.classify(
+        session_id="settings-sign",
+        query="把声音调小点",
+        meta={},
+        conversation_state=state,
+    )
+    assert outcome.function_analysis["target"] == "-10"
+    assert outcome.function_analysis["result"] == "声音调低"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "expected_result", "expected_target"),
+    [
+        ("我想联系家人", "小雅通话", ""),
+        ("我要做服务预约", "小雅预约", ""),
+        ("打开二胡学习视频", "小雅教育", "二胡"),
+        ("我想看电视", "小雅电影", ""),
+        ("我想娱乐一下", "娱乐管家", ""),
+        ("取消明天早上8点的闹钟", "取消闹钟", "2024-09-21 08:00:00"),
+    ],
+)
+async def test_classifier_toc_contract_for_general_user_queries(query, expected_result, expected_target):
+    fake_llm = FakeDoubaoClient({"intent_code": "UNKNOWN", "confidence": 0.2, "reply": ""})
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    state = ConversationState(session_id=f"toc-{query}")
+    outcome = await classifier.classify(
+        session_id=f"toc-{query}",
+        query=query,
+        meta={},
+        conversation_state=state,
+    )
+
+    assert outcome.function_analysis["result"] == expected_result
+    if expected_target:
+        assert outcome.function_analysis["target"] == expected_target
+    else:
+        assert (outcome.function_analysis["target"] or "") == ""
+    assert outcome.function_analysis["need_clarify"] is False
+    assert outcome.reply_message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "expected_target"),
+    [
+        ("给我讲讲高血压相关知识", "高血压相关知识"),
+        ("怎么判断有没有高血压", "判断高血压"),
+        ("被蜜蜂蛰了怎么办", "处理被蜜蜂蛰了"),
+    ],
+)
+async def test_classifier_health_education_qa_only_broadcasts(query, expected_target):
+    fake_llm = FakeDoubaoClient(
+        {
+            "intent_code": "UNKNOWN",
+            "confidence": 0.3,
+            "reply": "我来给您说说这个情况。",
+        }
+    )
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    state = ConversationState(session_id=f"health-{query}")
+    outcome = await classifier.classify(
+        session_id=f"health-{query}",
+        query=query,
+        meta={},
+        conversation_state=state,
+    )
+
+    assert outcome.function_analysis["result"] == ""
+    assert outcome.function_analysis["target"] == expected_target
+    assert outcome.function_analysis["need_clarify"] is False
+    assert outcome.reply_message
+
+
+@pytest.mark.asyncio
+async def test_classifier_open_health_education_page_keeps_public_result():
+    fake_llm = FakeDoubaoClient({"intent_code": "UNKNOWN", "confidence": 0.2, "reply": ""})
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    state = ConversationState(session_id="health-page")
+    outcome = await classifier.classify(
+        session_id="health-page",
+        query="打开健康科普页面",
+        meta={},
+        conversation_state=state,
+    )
+
+    assert outcome.function_analysis["result"] == "健康科普"
+    assert outcome.function_analysis["need_clarify"] is False
+    assert outcome.reply_message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "expected_result", "expected_target"),
+    [
+        ("帮我找王医生看病", "名医问诊", "王医生"),
+        ("新增一个用药计划", "用药计划", ""),
+        ("新建一个每天吃维生素d的计划", "用药计划", "维生素D"),
+        ("帮我联系张三的家庭医生", "家庭医生", "张三"),
+        ("帮我给王医生打个电话", "家庭医生", "王医生"),
+    ],
+)
+async def test_classifier_toc_contract_for_medical_and_family_flows(query, expected_result, expected_target):
+    fake_llm = FakeDoubaoClient({"intent_code": "UNKNOWN", "confidence": 0.2, "reply": ""})
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    state = ConversationState(session_id=f"medical-{query}")
+    outcome = await classifier.classify(
+        session_id=f"medical-{query}",
+        query=query,
+        meta={},
+        conversation_state=state,
+    )
+
+    assert outcome.function_analysis["result"] == expected_result
+    assert (outcome.function_analysis["target"] or "") == expected_target
+    assert outcome.function_analysis["need_clarify"] is False
+    assert outcome.reply_message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "llm_intent", "llm_result", "expected_result", "expected_target"),
+    [
+        ("打开二胡学习视频", "ENTERTAINMENT_GENERAL", "娱乐管家", "小雅教育", "二胡"),
+        ("我想看八段锦", "ENTERTAINMENT_GENERAL", "娱乐管家", "健康科普", "八段锦"),
+        ("有点闷，陪我说说话呗。", "JOKE_MODE", "笑话模式", "语音陪伴或聊天", ""),
+        ("帮我找王医生看病", "FAMILY_DOCTOR_GENERAL", "家庭医生", "名医问诊", "王医生"),
+        ("菜单里是不是有更新选项？帮我找找。", "UNKNOWN", "未知指令", "小雅设置", ""),
+        ("帮我瞧瞧老伴最近身体数据怎么样。", "HEALTH_MONITOR_GENERAL", "健康监测", "健康画像", "老伴"),
+        ("现在多少度", "TIME_BROADCAST", "播报时间", "今天天气", "今天"),
+        ("想看看商城里有没有温度计。", "MALL_GENERAL", "商城", "健康监测终端", ""),
+        ("阳台窗户合不上，能不能安排个人来修修。", "HOME_SERVICE_GENERAL", "小雅预约", "房屋维修", ""),
+        ("我想看电影", "ENTERTAINMENT_GENERAL", "娱乐管家", "小雅电影", ""),
+    ],
+)
+async def test_classifier_promotes_rule_candidate_for_toc_edge_cases(
+    query,
+    llm_intent,
+    llm_result,
+    expected_result,
+    expected_target,
+):
+    fake_llm = FakeDoubaoClient(
+        {
+            "reply": "我先帮您处理。",
+            "intent_candidates": [
+                {
+                    "intent_code": llm_intent,
+                    "result": llm_result,
+                    "target": "",
+                    "confidence": 0.92,
+                    "reason": "llm guess",
+                }
+            ],
+            "weather_info": {
+                "location": {"name": "", "type": "", "confidence": 0},
+                "datetime": {"text": "", "iso": "", "confidence": 0},
+                "needs_realtime_data": False,
+                "weather_summary": "",
+                "weather_condition": "",
+                "weather_confidence": 0,
+            },
+        }
+    )
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    state = ConversationState(session_id=f"promote-{query}")
+    outcome = await classifier.classify(
+        session_id=f"promote-{query}",
+        query=query,
+        meta={},
+        conversation_state=state,
+    )
+
+    assert outcome.function_analysis["result"] == expected_result
+    assert (outcome.function_analysis["target"] or "") == expected_target
+    assert outcome.function_analysis["need_clarify"] is False
+
+
+@pytest.mark.asyncio
+async def test_classifier_keeps_health_education_result_for_content_browse_query():
+    fake_llm = FakeDoubaoClient(
+        {
+            "intent_candidates": [
+                {
+                    "intent_code": "ENTERTAINMENT_GENERAL",
+                    "result": "娱乐管家",
+                    "target": "",
+                    "confidence": 0.9,
+                }
+            ],
+            "reply": "",
+        }
+    )
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    state = ConversationState(session_id="health-content")
+    outcome = await classifier.classify(
+        session_id="health-content",
+        query="我想看八段锦",
+        meta={},
+        conversation_state=state,
+    )
+
+    assert outcome.function_analysis["result"] == "健康科普"
+    assert outcome.function_analysis["target"] == "八段锦"
+    assert outcome.function_analysis["need_clarify"] is False
+
+
+@pytest.mark.asyncio
+async def test_classifier_unknown_uses_directional_local_clarify_message():
+    fake_llm = FakeDoubaoClient({
+        "reply": "",
+        "intent_code": "UNKNOWN",
+        "confidence": 0.2,
+    })
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    state = ConversationState(session_id="local-clarify")
+    outcome = await classifier.classify(
+        session_id="local-clarify",
+        query="最近学校怎么样？",
+        meta={},
+        conversation_state=state,
+    )
+
+    assert outcome.function_analysis["result"] == ""
+    assert outcome.function_analysis["need_clarify"] is True
+    assert "直接回答问题" in outcome.function_analysis["clarify_message"]
+    assert "打开小雅功能" in outcome.function_analysis["clarify_message"]
+
+
+@pytest.mark.asyncio
+async def test_classifier_unknown_uses_numbered_choices_on_third_clarify_round():
+    fake_llm = FakeDoubaoClient({
+        "reply": "",
+        "intent_code": "UNKNOWN",
+        "confidence": 0.2,
+    })
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    state = ConversationState(
+        session_id="local-clarify-round3",
+        pending_clarification=True,
+        clarify_message="上轮没有听清",
+        clarify_rounds=2,
+    )
+    outcome = await classifier.classify(
+        session_id="local-clarify-round3",
+        query="还是这个意思",
+        meta={},
+        conversation_state=state,
+    )
+
+    assert outcome.function_analysis["result"] == ""
+    assert outcome.function_analysis["need_clarify"] is True
+    assert "回复1" in outcome.function_analysis["clarify_message"]
+    assert "回复2" in outcome.function_analysis["clarify_message"]

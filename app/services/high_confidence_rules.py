@@ -40,6 +40,7 @@ ACTIONABLE_INTENTS = WEATHER_INTENTS | {
     IntentCode.TIME_BROADCAST,
     IntentCode.ALARM_CREATE,
     IntentCode.ALARM_REMINDER,
+    IntentCode.ALARM_CANCEL,
     IntentCode.ALARM_VIEW,
     IntentCode.SETTINGS_GENERAL,
     IntentCode.SETTINGS_SOUND_DOWN,
@@ -134,7 +135,8 @@ class HighConfidenceRuleEngine:
         if not query:
             return None
 
-        if any(token in query for token in NEGATIVE_TOKENS):
+        is_alarm_cancel = "取消" in query and any(term in query for term in ["闹钟", "提醒"])
+        if any(token in query for token in NEGATIVE_TOKENS) and not is_alarm_cancel:
             return None
 
         rule_result = run_rules(query, meta or {})
@@ -167,7 +169,7 @@ class HighConfidenceRuleEngine:
         if rule_result.time_source:
             analysis.time_source = rule_result.time_source
 
-        if rule_result.intent_code in {IntentCode.ALARM_CREATE, IntentCode.ALARM_REMINDER}:
+        if rule_result.intent_code in {IntentCode.ALARM_CREATE, IntentCode.ALARM_REMINDER, IntentCode.ALARM_CANCEL}:
             if rule_result.target:
                 analysis.parsed_time = rule_result.target
                 analysis.time_source = "rule"
@@ -209,7 +211,9 @@ class HighConfidenceRuleEngine:
         """构造天气查询所需的简要结构，便于后续 WeatherService 拉取数据。"""
         base_time = now_e8()
         target_date: Optional[datetime] = None
-        location_name = self._extract_location(query) or self._default_city
+        location_extracted = self._extract_location(query)
+        location_name = location_extracted or self._default_city
+        location_source = "query" if location_extracted else "default"
         intent = rule_result.intent_code
         target = rule_result.target
         parsed_time = getattr(rule_result, "parsed_time", None)
@@ -236,7 +240,8 @@ class HighConfidenceRuleEngine:
 
         detail: Dict[str, Any] = {
             "location": location_name,
-            "location_confidence": 1.0,
+            "location_source": location_source,
+            "location_confidence": 1.0 if location_extracted else 0.6,
             "needs_realtime_data": True,
         }
         if target_date:
@@ -278,6 +283,8 @@ class HighConfidenceRuleEngine:
                 continue
             if len(candidate) < 2:
                 continue
-            normalized, _ = normalize_city_name(candidate, self._default_city)
+            normalized, reason = normalize_city_name(candidate, self._default_city)
+            if reason == "raw":
+                continue
             return normalized
         return None
