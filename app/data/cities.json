@@ -1,0 +1,16 @@
+{
+  "cities": [
+    {"name": "长沙市", "aliases": ["长沙"]},
+    {"name": "北京市", "aliases": ["北京"]},
+    {"name": "上海市", "aliases": ["上海"]},
+    {"name": "广州市", "aliases": ["广州"]},
+    {"name": "深圳市", "aliases": ["深圳"]},
+    {"name": "武汉市", "aliases": ["武汉"]},
+    {"name": "杭州市", "aliases": ["杭州"]},
+    {"name": "成都市", "aliases": ["成都"]},
+    {"name": "南京市", "aliases": ["南京"]},
+    {"name": "天津市", "aliases": ["天津"]},
+    {"name": "西安市", "aliases": ["西安"]},
+    {"name": "重庆市", "aliases": ["重庆"]}
+  ]
+}
