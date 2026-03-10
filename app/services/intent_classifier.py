@@ -415,6 +415,10 @@ class IntentClassifier:
         if self._should_clarify(function_analysis):
             function_analysis["need_clarify"] = True
             clarify_message = (function_analysis.get("clarify_message") or "").strip()
+            if not clarify_message and reply_message.strip():
+                clarify_message = reply_message.strip()
+                function_analysis["clarify_message"] = clarify_message
+                self._append_reasoning_marker(function_analysis, "llm_reply_as_clarify")
             if not clarify_message or clarify_message == "我还不太确定您的意思，您可以再具体说说想做什么吗？":
                 clarify_message = self._build_local_clarify_message(
                     query=query,
@@ -1616,6 +1620,11 @@ class IntentClassifier:
         if conversation_state and getattr(conversation_state, "pending_clarification", False):
             rounds = min((getattr(conversation_state, "clarify_rounds", 0) or 0) + 1, 3)
 
+        def generic_fallback() -> str:
+            if rounds >= 3:
+                return "我先帮您缩小一下范围：回复1继续说这个情况，回复2让我帮您查信息或处理，回复3您再补充一点细节。"
+            return "我还没完全听明白，您可以再多说一点，我会继续帮您判断下一步怎么处理。"
+
         def finalize(options: list[str], best_guess: str = "") -> str:
             clean_options = [item.strip() for item in options if item and item.strip()]
             guess = (best_guess or (clean_options[0] if clean_options else "")).strip()
@@ -1625,17 +1634,21 @@ class IntentClassifier:
                     if guess:
                         return f"我先按最像的理解，您可能是想{guess}。如果不是，请{numbered}。"
                     return f"我先帮您缩小范围，请{numbered}。"
-                return "我先帮您缩小范围：回复1直接回答问题，回复2打开小雅功能，回复3继续描述一下。"
+                return generic_fallback()
             if len(clean_options) >= 2:
                 return f"您是想{clean_options[0]}，还是{clean_options[1]}？"
             if clean_options:
                 return f"您是想{clean_options[0]}吗？"
-            return "我还没完全听明白。您是想让我直接回答问题，还是帮您打开某个小雅功能？可以再说具体一点。"
+            return generic_fallback()
 
         rule_guess = ""
         if candidate_rule_result and getattr(candidate_rule_result, "result", None):
             rule_guess = f"打开{candidate_rule_result.result}"
 
+        if self._is_vague_symptom_query(text):
+            if rounds >= 3:
+                return "我先按体感不适来理解。您可以直接告诉我是屋里闷热，还是身体发热不舒服；如果需要，我也可以帮您查天气，或者帮您记录体温。"
+            return "听起来您现在有点不舒服。更像是屋里闷热，还是身体发热不舒服？如果需要，我也可以帮您查天气，或者帮您记录体温。"
         if any(token in text for token in ["眯一会", "亮着", "屏幕先灭", "先灭", "熄灭", "别亮了"]):
             return finalize(["帮您息屏", "把屏幕亮度调低一点"], "帮您息屏")
         if any(token in text for token in ["天气", "下雨", "带伞", "雨伞", "雨具", "阵雨", "晒", "冷不冷", "热不热", "潮", "外面"]):
@@ -1666,8 +1679,8 @@ class IntentClassifier:
         if any(token in text for token in ["头晕", "心慌", "过敏", "咳嗽", "发热", "发烧", "疼", "痛", "不舒服"]):
             return finalize(["直接说说健康建议", "打开健康监测功能", "联系医生咨询"], "直接说说健康建议")
         if rule_guess:
-            return finalize([rule_guess, "直接回答问题", "换个小雅功能"], rule_guess)
-        return finalize(["直接回答问题", "打开小雅功能", "继续描述一下"], "直接回答问题")
+            return finalize([rule_guess, "继续说说您想了解的内容", "换个相关功能"], rule_guess)
+        return generic_fallback()
 
     def _apply_toc_contract(
         self,

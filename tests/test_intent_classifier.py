@@ -821,7 +821,7 @@ async def test_classifier_keeps_health_education_result_for_content_browse_query
 
 
 @pytest.mark.asyncio
-async def test_classifier_unknown_uses_directional_local_clarify_message():
+async def test_classifier_unknown_uses_natural_local_clarify_message():
     fake_llm = FakeDoubaoClient({
         "reply": "",
         "intent_code": "UNKNOWN",
@@ -838,8 +838,61 @@ async def test_classifier_unknown_uses_directional_local_clarify_message():
 
     assert outcome.function_analysis["result"] == ""
     assert outcome.function_analysis["need_clarify"] is True
-    assert "直接回答问题" in outcome.function_analysis["clarify_message"]
-    assert "打开小雅功能" in outcome.function_analysis["clarify_message"]
+    assert "再多说一点" in outcome.function_analysis["clarify_message"]
+    assert "下一步怎么处理" in outcome.function_analysis["clarify_message"]
+    assert "直接回答问题" not in outcome.function_analysis["clarify_message"]
+    assert "打开小雅功能" not in outcome.function_analysis["clarify_message"]
+
+
+@pytest.mark.asyncio
+async def test_classifier_vague_symptom_local_clarify_is_contextual():
+    fake_llm = FakeDoubaoClient({
+        "reply": "",
+        "intent_code": "UNKNOWN",
+        "confidence": 0.2,
+    })
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    state = ConversationState(session_id="vague-symptom-clarify")
+    outcome = await classifier.classify(
+        session_id="vague-symptom-clarify",
+        query="我感觉好热",
+        meta={},
+        conversation_state=state,
+    )
+
+    assert outcome.function_analysis["result"] == ""
+    assert outcome.function_analysis["need_clarify"] is True
+    clarify = outcome.function_analysis["clarify_message"] or ""
+    assert "闷热" in clarify
+    assert "发热" in clarify
+    assert "查天气" in clarify
+    assert "记录体温" in clarify
+    assert "直接回答问题" not in clarify
+    assert "打开小雅功能" not in clarify
+
+
+@pytest.mark.asyncio
+async def test_classifier_prefers_llm_reply_as_clarify_message():
+    expected_reply = "您是觉得室内闷热，还是身体有发热感呢？如果需要，我也可以帮您查天气。"
+    fake_llm = FakeDoubaoClient({
+        "reply": expected_reply,
+        "intent_code": "UNKNOWN",
+        "confidence": 0.2,
+    })
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    state = ConversationState(session_id="llm-reply-clarify")
+    outcome = await classifier.classify(
+        session_id="llm-reply-clarify",
+        query="我感觉好热",
+        meta={},
+        conversation_state=state,
+    )
+
+    assert outcome.function_analysis["need_clarify"] is True
+    assert outcome.function_analysis["clarify_message"] == expected_reply
+    reasoning = outcome.function_analysis["reasoning"] or ""
+    assert "llm_reply_as_clarify" in reasoning
+    assert "local_clarify_fallback" not in reasoning
 
 
 @pytest.mark.asyncio
