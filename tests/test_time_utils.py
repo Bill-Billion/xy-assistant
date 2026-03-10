@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from app.utils.time_utils import (
     EAST_EIGHT,
     derive_alarm_target,
+    extract_event,
     extract_time_expression,
     extract_person_name,
     sanitize_person_name,
@@ -55,6 +56,20 @@ def test_tomorrow_morning_alarm():
     assert target == "2024-09-21 09:00:00"
     assert event == "吃药"
     assert status is None
+
+
+def test_colon_time_alarm_target():
+    base = datetime(2024, 9, 20, 10, 0, tzinfo=EAST_EIGHT)
+    query = "给我设置一个下午3:20的闹钟"
+    expr = extract_time_expression(query, base)
+    target, event, status = derive_alarm_target(query, base, expr)
+    assert target == "2024-09-20 15:20:00"
+    assert event is None
+    assert status is None
+
+
+def test_extract_event_removes_colon_time_text():
+    assert extract_event("取消下午4:10的闹钟") is None
 
 
 def test_relative_chinese_numeral():

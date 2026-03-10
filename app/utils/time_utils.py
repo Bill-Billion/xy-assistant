@@ -559,7 +559,11 @@ _relative_pattern = re.compile(
 
 _periodic_pattern = re.compile(r"每周[一二三四五六日天]|每天|每日|每晚|每早")
 
-_time_pattern = re.compile(r"(?:(上午|下午|早上|晚上|中午))?(\d{1,2})(点|点钟)(?:(\d{1,2})分)?")
+_time_pattern = re.compile(
+    r"(?:(上午|下午|早上|晚上|中午))?"
+    r"(\d{1,2})"
+    r"(?:(点|点钟)(?:(\d{1,2})分)?|[:：](\d{2}))"
+)
 _date_pattern = re.compile(r"(?:(\d{2,4})年)?(\d{1,2})月(\d{1,2})(?:日|号)?")
 
 
@@ -805,7 +809,7 @@ def extract_time_expression(text: str, base_time: Optional[datetime] = None) -> 
     if time_match:
         meridiem = time_match.group(1) or ""
         hour = int(time_match.group(2))
-        minute = int(time_match.group(4) or 0)
+        minute = int(time_match.group(4) or time_match.group(5) or 0)
         resolved_hour = resolve_hour(hour, meridiem, base_time)
         if expr.date_value:
             candidate = expr.date_value.replace(hour=resolved_hour, minute=minute, second=0, microsecond=0)
@@ -916,9 +920,14 @@ def extract_event(text: str) -> Optional[str]:
     cleaned = re.sub(r"\d{1,2}月\d{1,2}(?:日|号)?", "", cleaned)
     cleaned = _normalize_time_phrases(cleaned)
     cleaned = re.sub(r"提醒(我)?", "", cleaned)
-    cleaned = re.sub(r"(闹钟|设定|设置|帮我|一下|一个|请|安排|订个?|定个?)", "", cleaned)
+    cleaned = re.sub(
+        r"(闹钟|设定|设置|设个?|帮我|给我|取消|删除|移除|关闭|关掉|一下|一个|请|安排|订个?|定个?)",
+        "",
+        cleaned,
+    )
     cleaned = re.sub(_relative_pattern, "", cleaned)
     cleaned = re.sub(_time_pattern, "", cleaned)
+    cleaned = re.sub(r"(?:上午|下午|早上|晚上|中午)?\d{1,2}[:：]\d{2}", "", cleaned)
     cleaned = re.sub(_date_pattern, "", cleaned)
     cleaned = re.sub(r"\d{1,2}月\d{1,2}(?:日|号)?", "", cleaned)
     cleaned = cleaned.replace("每周", "").replace("每天", "")

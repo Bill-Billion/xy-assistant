@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import json
+import os
 import re
 import sys
 from http.client import HTTPConnection
@@ -14,7 +15,7 @@ API_URL = "http://0.0.0.0:8000/api/command"
 INPUT_FILE = Path("order_fuzzy.csv")
 OUTPUT_FILE = Path("order_fuzzy_results.csv")
 ENCODING = "utf-8-sig"
-TIMEOUT = 20
+TIMEOUT = int(os.environ.get("FUZZY_TIMEOUT", "30"))
 
 # 兼容以脚本方式运行（python tools/run_fuzzy_tests.py），确保可导入项目包 app/*
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

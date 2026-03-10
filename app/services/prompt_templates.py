@@ -98,7 +98,112 @@ def build_system_prompt() -> str:
         }}
         ```
 
-        #### 示例 2：天气
+        #### 示例 2：冒号时间格式闹钟
+        输入：
+        ```
+        用户：给我设置一个下午3:20的闹钟
+        ```
+        输出：
+        ```json
+        {{
+          "intent_candidates": [
+            {{
+              "intent_code": "ALARM_CREATE",
+              "result": "新增闹钟",
+              "target": "2025-10-30 15:20:00",
+              "parsed_time": "2025-10-30 15:20:00",
+              "time_text": "下午3:20",
+              "time_confidence": 0.95,
+              "event": "",
+              "event_confidence": 0.0,
+              "status": "",
+              "confidence": 0.93,
+              "reason": "用户明确要求设置下午3:20的闹钟"
+            }}
+          ],
+          "weather_info": {{
+            "location": {{"name": "", "type": "", "confidence": 0.0}},
+            "datetime": {{"text": "", "iso": "", "confidence": 0.0}},
+            "needs_realtime_data": false,
+            "weather_summary": "",
+            "weather_condition": "",
+            "weather_confidence": 0.0
+          }},
+          "reply": "好的，我已经为您设置下午3:20的闹钟。"
+        }}
+        ```
+
+        #### 示例 3：取消闹钟
+        输入：
+        ```
+        用户：取消下午4:10的闹钟
+        ```
+        输出：
+        ```json
+        {{
+          "intent_candidates": [
+            {{
+              "intent_code": "ALARM_CANCEL",
+              "result": "取消闹钟",
+              "target": "2025-10-30 16:10:00",
+              "parsed_time": "2025-10-30 16:10:00",
+              "time_text": "下午4:10",
+              "time_confidence": 0.9,
+              "event": "",
+              "event_confidence": 0.0,
+              "status": "",
+              "confidence": 0.92,
+              "reason": "用户明确要求取消下午4:10的闹钟"
+            }}
+          ],
+          "weather_info": {{
+            "location": {{"name": "", "type": "", "confidence": 0.0}},
+            "datetime": {{"text": "", "iso": "", "confidence": 0.0}},
+            "needs_realtime_data": false,
+            "weather_summary": "",
+            "weather_condition": "",
+            "weather_confidence": 0.0
+          }},
+          "reply": "好的，我来帮您取消下午4:10的闹钟。"
+        }}
+        ```
+
+        #### 示例 4：中文数字时间闹钟
+        输入：
+        ```
+        用户：明天下午四点十分提醒我取快递
+        ```
+        输出：
+        ```json
+        {{
+          "intent_candidates": [
+            {{
+              "intent_code": "ALARM_REMINDER",
+              "result": "新增闹钟",
+              "target": "2025-10-30 16:10:00",
+              "parsed_time": "2025-10-30 16:10:00",
+              "time_text": "明天下午四点十分",
+              "time_confidence": 0.9,
+              "event": "取快递",
+              "event_confidence": 0.88,
+              "status": "",
+              "confidence": 0.91,
+              "reason": "用户明确要求在明天下午四点十分提醒取快递"
+            }}
+          ],
+          "weather_info": {{
+            "location": {{"name": "", "type": "", "confidence": 0.0}},
+            "datetime": {{"text": "", "iso": "", "confidence": 0.0}},
+            "needs_realtime_data": false,
+            "weather_summary": "",
+            "weather_condition": "",
+            "weather_confidence": 0.0
+          }},
+          "reply": "好的，我已经为您设置明天下午四点十分提醒取快递。"
+        }}
+        ```
+
+        #### 示例 5：天气
         输入：
         ```
         用户：明天长沙会不会下雨？
@@ -128,7 +233,7 @@ def build_system_prompt() -> str:
         ```
         （生成时请自动计算真实日期，示例中的日期值仅作占位。）
 
-        #### 示例 3：健康科普
+        #### 示例 6：健康科普
         输入：
         ```
         用户：熬夜后头晕怎么办？

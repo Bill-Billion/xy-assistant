@@ -691,6 +691,8 @@ class CommandService:
                 system_prompt=self._weather_reply_prompt,
                 messages=[{"role": "user", "content": user_message}],
                 overrides={"max_tokens": 160, "temperature": 0.4, "top_p": 0.8},
+                timeout=15.0,
+                max_retries=1,
             )
             candidate = raw_text.strip()
             return candidate or summary
@@ -976,34 +978,11 @@ class CommandService:
         # 否则默认
         return default_city, "default"
 
-    async def _get_local_weather_context(self, city: str) -> Optional[Dict[str, Any]]:
-        """拉取并缓存本地天气摘要供 LLM 参考。"""
-        if not self._weather_service or not self._weather_service.enabled:
-            return None
-        cache_key = city or self._settings.weather_default_city
-        if self._local_weather_cache is not None and cache_key in self._local_weather_cache:
-            cached = self._local_weather_cache[cache_key]
-            if cached:
-                return cached
-        llm_info = {
-            "location": city,
-            "location_confidence": 0.95,
-            "location_source": "context",
-            "target_date": now_e8().date().isoformat(),
-            "needs_realtime_data": True,
-        }
-        try:
-            context = await self._weather_service.fetch(
-                llm_info=llm_info,
-                summary=None,
-                needs_realtime=True,
-                query="context-local-weather",
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("local weather fetch failed", error=str(exc))
-            return None
+    def _build_local_weather_meta_from_context(self, context: Any) -> Optional[Dict[str, Any]]:
+        """基于已获取的天气上下文生成 local_weather，避免重复拉取上游天气。"""
         if not context:
             return None
+
         summary = context.summary
         target_day = (context.derived_flags or {}).get("target_day") or {}
         current = context.current or {}
@@ -1062,6 +1041,39 @@ class CommandService:
         }
         if summary_short and summary_short != summary:
             meta["summary_short"] = summary_short
+        return meta
+
+    async def _get_local_weather_context(self, city: str) -> Optional[Dict[str, Any]]:
+        """拉取并缓存本地天气摘要供 LLM 参考。"""
+        if not self._weather_service or not self._weather_service.enabled:
+            return None
+        cache_key = city or self._settings.weather_default_city
+        if self._local_weather_cache is not None and cache_key in self._local_weather_cache:
+            cached = self._local_weather_cache[cache_key]
+            if cached:
+                return cached
+        llm_info = {
+            "location": city,
+            "location_confidence": 0.95,
+            "location_source": "context",
+            "target_date": now_e8().date().isoformat(),
+            "needs_realtime_data": True,
+        }
+        try:
+            context = await self._weather_service.fetch(
+                llm_info=llm_info,
+                summary=None,
+                needs_realtime=True,
+                query="context-local-weather",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("local weather fetch failed", error=str(exc))
+            return None
+        if not context:
+            return None
+        meta = self._build_local_weather_meta_from_context(context)
+        if not meta:
+            return None
         if self._local_weather_cache is not None:
             self._local_weather_cache[cache_key] = meta
         return meta
@@ -1110,6 +1122,30 @@ class CommandService:
             "湿度",
         ]
         return any(keyword in query for keyword in keywords)
+
+    def _should_prefetch_local_weather(self, query: str) -> bool:
+        """仅在非显式天气请求时预拉取天气上下文，避免正式天气链路重复抓取。"""
+        if not self._should_attach_local_weather(query):
+            return False
+        explicit_weather_tokens = [
+            "天气",
+            "气温",
+            "温度",
+            "几度",
+            "多少度",
+            "℃",
+            "下雨",
+            "降雨",
+            "降温",
+            "下雪",
+            "刮风",
+            "风力",
+            "空气质量",
+            "雾霾",
+            "紫外线",
+            "湿度",
+        ]
+        return not any(token in query for token in explicit_weather_tokens)
 
     async def _ensure_local_weather_meta(self, meta_payload: Dict[str, Any]) -> None:
         """在 meta 中填充 local_weather 上下文，供大模型推理参考。"""
@@ -1442,7 +1478,7 @@ class CommandService:
             if weather_detail_payload:
                 function_analysis.weather_detail = dict(weather_detail_payload)
         else:
-            if self._should_attach_local_weather(payload.query):
+            if self._should_prefetch_local_weather(payload.query):
                 await self._ensure_local_weather_meta(meta_payload)
 
             classify_start = perf_counter()
@@ -1627,6 +1663,16 @@ class CommandService:
 
             # 记录用于回复生成的天气摘要（作为 fallback）
             weather_reply_summary = function_analysis.weather_summary or base_summary or ""
+
+            if not (meta_payload.get("context") or {}).get("local_weather"):
+                local_weather = self._build_local_weather_meta_from_context(weather_context)
+                if local_weather:
+                    context_meta = dict(meta_payload.get("context") or {})
+                    context_meta["local_weather"] = local_weather
+                    meta_payload["context"] = context_meta
+                    if self._local_weather_cache is not None:
+                        cache_key = weather_context.location or self._settings.weather_default_city
+                        self._local_weather_cache[cache_key] = local_weather
 
         needs_structured_reply = bool(rule_match and not reply_message and not weather_reply_data and not weather_reply_summary)
 
@@ -1973,6 +2019,7 @@ class CommandService:
                     system_prompt=self._weather_reply_prompt,
                     messages=[{"role": "user", "content": user_message}],
                     overrides={"max_tokens": 160, "temperature": 0.4, "top_p": 0.8},
+                    timeout=15.0,
                 ):
                     collected_chunks.append(chunk)
                     yield sse_msg_delta_event(chunk)
@@ -1999,6 +2046,7 @@ class CommandService:
                     system_prompt=self._weather_reply_prompt,
                     messages=[{"role": "user", "content": user_message}],
                     overrides={"max_tokens": 160, "temperature": 0.4, "top_p": 0.8},
+                    timeout=15.0,
                 ):
                     collected_chunks.append(chunk)
                     yield sse_msg_delta_event(chunk)

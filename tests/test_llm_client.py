@@ -32,9 +32,12 @@ class FakeAsyncClient:
         self._responses = list(responses)
         self.calls: list[dict] = []
 
-    async def post(self, url: str, *, headers=None, json=None):  # noqa: A002
-        self.calls.append({"url": url, "headers": headers, "json": json})
-        return self._responses.pop(0)
+    async def post(self, url: str, *, headers=None, json=None, timeout=None):  # noqa: A002
+        self.calls.append({"url": url, "headers": headers, "json": json, "timeout": timeout})
+        response = self._responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
     async def aclose(self) -> None:
         return None
@@ -127,3 +130,27 @@ async def test_chat_allows_thinking_type_override():
     )
 
     assert client.calls[0]["json"]["thinking_type"] == "disabled"
+
+
+@pytest.mark.asyncio
+async def test_chat_supports_per_call_timeout_and_retry_override():
+    client = FakeAsyncClient([httpx.ReadTimeout("boom")])
+    llm = DoubaoClient(
+        api_key="test-key",
+        api_url="https://example.com/v1/chat/completions",
+        model="doubao-seed-2-0-mini",
+        max_retries=3,
+        client=client,
+    )
+
+    raw, parsed = await llm.chat(
+        system_prompt="system",
+        messages=[{"role": "user", "content": "hi"}],
+        timeout=15.0,
+        max_retries=1,
+    )
+
+    assert raw == ""
+    assert parsed == {}
+    assert len(client.calls) == 1
+    assert client.calls[0]["timeout"] == 15.0

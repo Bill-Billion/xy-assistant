@@ -64,9 +64,9 @@ class WeatherClient:
 
         if response.status_code != httpx.codes.OK:
             logger.warning(
-                "weather api http error",
-                status=response.status_code,
-                body=response.text[:200],
+                "weather api http error | status={} body={}",
+                response.status_code,
+                response.text[:200],
             )
             raise WeatherAPIError(f"Weather API HTTP {response.status_code}")
 

@@ -46,6 +46,8 @@ class DoubaoClient:
         messages: List[Dict[str, str]],
         response_format: Optional[Dict[str, Any]] = None,
         overrides: Optional[Dict[str, Any]] = None,
+        timeout: float | None = None,
+        max_retries: int | None = None,
     ) -> tuple[str, dict[str, Any]]:
         """统一处理请求构造、重试机制以及 JSON 解析。"""
         headers = {
@@ -74,13 +76,21 @@ class DoubaoClient:
 
         last_exception: Exception | None = None
         payload_variants = self._build_payload_variants(payload)
+        request_timeout = timeout if timeout is not None else self.timeout
+        retry_limit = max_retries if max_retries is not None else self.max_retries
+        retry_limit = max(1, int(retry_limit))
 
         for variant_index, (variant_name, variant_payload) in enumerate(payload_variants):
             attempt = 0
-            while attempt < self.max_retries:
+            while attempt < retry_limit:
                 try:
                     call_start = perf_counter()
-                    response = await self._client.post(self.api_url, headers=headers, json=variant_payload)
+                    response = await self._client.post(
+                        self.api_url,
+                        headers=headers,
+                        json=variant_payload,
+                        timeout=request_timeout,
+                    )
                     response.raise_for_status()
                     data = response.json()
                     raw_text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -94,6 +104,7 @@ class DoubaoClient:
                         max_tokens=variant_payload.get("max_tokens"),
                         temperature=variant_payload.get("temperature"),
                         top_p=variant_payload.get("top_p"),
+                        timeout=request_timeout,
                     )
                     return raw_text, parsed
                 except httpx.HTTPStatusError as exc:
@@ -204,6 +215,7 @@ class DoubaoClient:
         system_prompt: str,
         messages: List[Dict[str, str]],
         overrides: Optional[Dict[str, Any]] = None,
+        timeout: float | None = None,
     ) -> AsyncIterator[str]:
         """流式调用，逐 token yield 文本片段。"""
         headers = {
@@ -229,7 +241,7 @@ class DoubaoClient:
 
         async with self._client.stream(
             "POST", self.api_url, headers=headers, json=payload,
-            timeout=self.timeout,
+            timeout=timeout if timeout is not None else self.timeout,
         ) as response:
             response.raise_for_status()
             async for line in response.aiter_lines():

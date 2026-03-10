@@ -13,7 +13,7 @@ class SequencedFakeDoubao:
     def __init__(self, payloads):
         self._payloads = list(payloads)
 
-    async def chat(self, system_prompt, messages, response_format=None):  # noqa: D401
+    async def chat(self, system_prompt, messages, response_format=None, overrides=None, timeout=None, max_retries=None):  # noqa: D401
         if not self._payloads:
             raise RuntimeError("no payload available")
         payload = self._payloads.pop(0)

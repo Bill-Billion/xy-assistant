@@ -279,6 +279,7 @@ def test_sound_max_volume_delegates_to_llm():
     [
         ("取消明天早上8点的闹钟", "2024-09-21 08:00:00", False),
         ("删除明天早上8点的提醒", "2024-09-21 08:00:00", False),
+        ("取消下午4:10的闹钟", "2024-09-20 16:10:00", False),
         ("取消闹钟", "", True),
     ],
 )
@@ -289,6 +290,14 @@ def test_alarm_cancel_toc_variants(query, expected_target, expected_clarify):
     assert result.result == "取消闹钟"
     assert (result.target or "") == expected_target
     assert result.need_clarify is expected_clarify
+
+
+def test_alarm_create_supports_colon_time_format():
+    result = run_rules("给我设置一个下午3:20的闹钟")
+    assert result
+    assert result.intent_code == IntentCode.ALARM_CREATE
+    assert result.result == "新增闹钟"
+    assert result.target == "2024-09-20 15:20:00"
 
 
 @pytest.mark.parametrize(

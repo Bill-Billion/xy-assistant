@@ -14,7 +14,7 @@ class FakeDoubaoClient:
             payloads = [payloads]
         self._payloads = list(payloads)
 
-    async def chat(self, system_prompt, messages, response_format=None):  # noqa: D401
+    async def chat(self, system_prompt, messages, response_format=None, overrides=None, timeout=None, max_retries=None):  # noqa: D401
         if not self._payloads:
             raise RuntimeError("no more payloads")
         payload = self._payloads.pop(0)
@@ -635,6 +635,24 @@ async def test_classifier_toc_contract_for_general_user_queries(query, expected_
         assert (outcome.function_analysis["target"] or "") == ""
     assert outcome.function_analysis["need_clarify"] is False
     assert outcome.reply_message
+
+
+@pytest.mark.asyncio
+async def test_classifier_fills_cancel_alarm_parsed_time_from_rule():
+    fake_llm = FakeDoubaoClient({"intent_code": "UNKNOWN", "confidence": 0.2, "reply": ""})
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    state = ConversationState(session_id="alarm-cancel-colon")
+    outcome = await classifier.classify(
+        session_id="alarm-cancel-colon",
+        query="取消下午4:10的闹钟",
+        meta={},
+        conversation_state=state,
+    )
+
+    assert outcome.function_analysis["result"] == "取消闹钟"
+    assert outcome.function_analysis["target"] == "2024-09-20 16:10:00"
+    assert outcome.function_analysis["parsed_time"] == "2024-09-20 16:10:00"
+    assert outcome.function_analysis["time_source"] == "rule"
 
 
 @pytest.mark.asyncio

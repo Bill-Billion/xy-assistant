@@ -909,7 +909,11 @@ class IntentClassifier:
         if (
             not parsed_time_value
             and rule_result
-            and rule_result.intent_code in {IntentCode.ALARM_CREATE, IntentCode.ALARM_REMINDER}
+            and rule_result.intent_code in {
+                IntentCode.ALARM_CREATE,
+                IntentCode.ALARM_REMINDER,
+                IntentCode.ALARM_CANCEL,
+            }
             and rule_result.target
         ):
             candidate_iso = str(rule_result.target).strip()
