@@ -1434,31 +1434,13 @@ class IntentClassifier:
 
         candidate_name = self._extract_candidate_name(query)
         if not candidate_name:
-            # 无法从语句提取姓名时，若仅有单一候选，则直接采用用户提供的候选
-            if len(candidates) == 1:
-                matched = candidates[0]
-                function_analysis["target"] = matched
-                function_analysis["need_clarify"] = False
-                function_analysis["clarify_message"] = None
-                existing_confidence = function_analysis.get("confidence")
-                try:
-                    numeric_conf = float(existing_confidence) if existing_confidence is not None else 0.0
-                except (TypeError, ValueError):
-                    numeric_conf = 0.0
-                function_analysis["confidence"] = max(numeric_conf, 0.85)
-                conversation_state.last_selected_user = matched
-                reasoning = function_analysis.get("reasoning") or ""
-                source_note = f"user_target={matched}"
-                function_analysis["reasoning"] = f"{reasoning}；{source_note}" if reasoning else source_note
-            return
+            return  # 保持 target 为空，由 _finalize_response 触发澄清
 
         matched = None
         if candidate_name in candidates:
             matched = candidate_name
         else:
             matched = self._fuzzy_match_candidate(candidate_name, candidates)
-        if not matched and len(candidates) == 1:
-            matched = candidates[0]
         if not matched:
             return
 

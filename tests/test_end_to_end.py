@@ -464,3 +464,77 @@ async def test_alarm_target_llm_fallback(monkeypatch):
     assert response.function_analysis.result == "新增闹钟"
     assert response.function_analysis.target
     assert response.function_analysis.event == "吃药"
+
+
+@pytest.mark.asyncio
+async def test_single_candidate_triggers_clarify_instead_of_autofill():
+    """单候选用户时不自动填充 target，应触发澄清询问。"""
+    fake_llm = SequencedFakeDoubao([
+        {
+            "intent_code": "HEALTH_MONITOR_BLOOD_PRESSURE",
+            "result": "血压监测",
+            "target": "",
+            "confidence": 0.9,
+            "reply": "好的，请问要给谁测血压？",
+            "need_clarify": False,
+        },
+    ])
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    manager = ConversationManager()
+    settings = Settings(
+        DOUBAO_API_KEY="test",
+        DOUBAO_MODEL="test-model",
+        DOUBAO_API_URL="https://example.com",
+        DOUBAO_TIMEOUT=5.0,
+        CONFIDENCE_THRESHOLD=0.7,
+        ENVIRONMENT="test",
+    )
+    service = CommandService(classifier, manager, settings)
+
+    response = await service.handle_command(
+        CommandRequest(sessionId="sess-single-cand", query="我想测血压", user="小张")
+    )
+
+    assert response.function_analysis.result == "血压监测"
+    assert response.function_analysis.target == ""
+    assert response.requires_selection is True
+
+
+@pytest.mark.asyncio
+async def test_user_selection_name_not_in_candidates():
+    """澄清回复的名字不在候选列表中时，返回"没有找到"提示。"""
+    fake_llm = SequencedFakeDoubao([
+        {
+            "intent_code": "HEALTH_MONITOR_BLOOD_PRESSURE",
+            "result": "血压监测",
+            "target": "",
+            "confidence": 0.9,
+            "reply": "好的，请问要给谁测血压？",
+            "need_clarify": False,
+        },
+        # 第二轮 LLM 不会被命中，因为 _handle_user_selection 会先拦截
+    ])
+    classifier = IntentClassifier(fake_llm, confidence_threshold=0.7)
+    manager = ConversationManager()
+    settings = Settings(
+        DOUBAO_API_KEY="test",
+        DOUBAO_MODEL="test-model",
+        DOUBAO_API_URL="https://example.com",
+        DOUBAO_TIMEOUT=5.0,
+        CONFIDENCE_THRESHOLD=0.7,
+        ENVIRONMENT="test",
+    )
+    service = CommandService(classifier, manager, settings)
+
+    # 第1轮：触发澄清
+    first = await service.handle_command(
+        CommandRequest(sessionId="sess-notfound", query="我想测血压", user="小张,小杨")
+    )
+    assert first.requires_selection is True
+
+    # 第2轮：回复不在列表中的名字
+    second = await service.handle_command(
+        CommandRequest(sessionId="sess-notfound", query="王五", user="小张,小杨")
+    )
+    assert "没有找到" in second.msg
+    assert "王五" in second.msg

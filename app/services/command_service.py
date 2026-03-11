@@ -462,7 +462,30 @@ class CommandService:
                 session_id=session_id,
             )
         if not matched:
-            return None
+            # 短文本且不含动作关键词 → 视为名字尝试，提示未找到
+            action_keywords = {"测", "量", "看", "查", "打开", "设置", "取消", "算了", "不用", "不要", "帮", "我想"}
+            is_likely_name = name and len(name) <= 8 and not any(kw in query for kw in action_keywords)
+            if is_likely_name:
+                not_found_msg = f"用户列表中没有找到\u201c{name}\u201d，请确认姓名或先添加该用户。"
+                analysis_model = FunctionAnalysis.model_validate(last_analysis_dict)
+                analysis_model.need_clarify = True
+                analysis_model.clarify_message = not_found_msg
+                self._conversation_manager.update_state(
+                    session_id=session_id,
+                    query=query,
+                    response_message=not_found_msg,
+                    function_analysis=analysis_model,
+                    raw_llm_output="",
+                    user_candidates=candidates,
+                )
+                return CommandResponse(
+                    code=200,
+                    msg=not_found_msg,
+                    sessionId=session_id,
+                    requiresSelection=True,
+                    function_analysis=analysis_model,
+                )
+            return None  # 不像名字 → 回退正常分类流程
 
         analysis_model = FunctionAnalysis.model_validate(last_analysis_dict)
         analysis_model.target = matched
@@ -1780,23 +1803,19 @@ class CommandService:
                         function_analysis.target = ""
                         fa_target = ""
 
-                if not fa_target:
-                    if len(candidates) == 1:
-                        function_analysis.target = candidates[0]
-                        fa_target = candidates[0]
-                    elif len(candidates) > 1 and not function_analysis.need_clarify:
-                        function_analysis.need_clarify = True
-                        clarification = await self._generate_structured_reply(
-                            session_id=session_id,
-                            query=payload.query,
-                            function_analysis=function_analysis,
-                            conversation_state=context,
-                            meta=meta_payload,
-                        )
-                        if clarification:
-                            function_analysis.clarify_message = clarification
-                            response_message = clarification
-                        requires_selection = True
+                if not fa_target and not function_analysis.need_clarify:
+                    function_analysis.need_clarify = True
+                    clarification = await self._generate_structured_reply(
+                        session_id=session_id,
+                        query=payload.query,
+                        function_analysis=function_analysis,
+                        conversation_state=context,
+                        meta=meta_payload,
+                    )
+                    if clarification:
+                        function_analysis.clarify_message = clarification
+                        response_message = clarification
+                    requires_selection = True
 
                 selection_candidates = candidates
                 requires_selection = bool(function_analysis.need_clarify) or (
