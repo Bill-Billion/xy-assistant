@@ -1493,7 +1493,8 @@ class CommandService:
         if rule_match:
             rule_source = "rule"
             function_analysis = rule_match.analysis
-            reply_message = ""
+            # 规则命中时用模板生成回复，避免触发 LLM
+            reply_message = _render_template(function_analysis) or ""
             raw_output = ""
             weather_context = None
             weather_detail_payload = rule_match.weather_detail or {}
@@ -1851,16 +1852,8 @@ class CommandService:
 
                 if not fa_target and not function_analysis.need_clarify:
                     function_analysis.need_clarify = True
-                    clarification = await self._generate_structured_reply(
-                        session_id=session_id,
-                        query=payload.query,
-                        function_analysis=function_analysis,
-                        conversation_state=context,
-                        meta=meta_payload,
-                    )
-                    if clarification:
-                        function_analysis.clarify_message = clarification
-                        response_message = clarification
+                    function_analysis.clarify_message = f"请问您要为谁{fa_result}？"
+                    response_message = function_analysis.clarify_message
                     requires_selection = True
 
                 selection_candidates = candidates
