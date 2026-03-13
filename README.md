@@ -138,7 +138,7 @@ flowchart LR
 - 接口层：FastAPI 路由、请求/响应模型、SSE 输出
 - 理解层：规则、意图分类器、目标纠偏、会话上下文
 - 领域能力层：天气、日历、时间、健康、娱乐、通话等业务规则
-- 工程保障层：测试、模糊回归脚本、部署脚本、结构化数据集
+- 工程保障层：测试、模糊回归脚本、Docker 构建文档、结构化数据集
 
 ## 项目结构
 
@@ -151,12 +151,14 @@ xy-assistant/
 │   ├── services/             # 指令编排、意图分类、天气、LLM 客户端
 │   ├── utils/                # 时间/城市/文本等工具函数
 │   └── data/                 # 城市等静态资源
+├── data/                     # 意图数据集与模板
 ├── tests/                    # pytest 单元与集成测试
 ├── tools/                    # 模糊回归、SSE 验证、数据生成脚本
-├── data/                     # 意图数据集与模板
+├── Dockerfile                # Docker 镜像构建
 ├── README.md
-├── API_DOCUMENTATION.md
-├── DOCKER_DEPLOYMENT.md
+├── DOCKER_DEPLOYMENT.md      # Docker 构建、运行与分发说明
+├── command_intent_mapping.csv
+├── order_fuzzy.csv
 └── pyproject.toml
 ```
 
@@ -311,6 +313,16 @@ python tools/test_stream_full_report.py
 
 ## 部署
 
+### 构建前准备
+
+当前仓库的 `Dockerfile` 会在构建阶段把 `.env.docker` 复制到镜像内的 `.env`，因此构建前请先准备该文件：
+
+```bash
+cp .env.example .env.docker
+```
+
+然后按实际环境填写 `.env.docker` 中的模型和天气配置。
+
 ### 本地构建 Docker 镜像
 
 ```bash
@@ -326,12 +338,28 @@ DOCKER_CONTEXT=default docker buildx build \
 docker save xy-assistant:latest -o xy-assistant-latest.tar
 ```
 
+### 本地运行容器
+
+```bash
+docker run --rm \
+  --name xy-assistant \
+  -p 8000:8000 \
+  --env-file .env.docker \
+  xy-assistant:latest
+```
+
+说明：
+
+- 当前镜像默认监听 `8000` 端口
+- 运行时传入 `--env-file .env.docker` 可以覆盖同名环境变量
+- 如果你不希望把敏感配置烘焙进镜像，需要先调整 `Dockerfile` 再构建
+
 更完整的部署说明见 [DOCKER_DEPLOYMENT.md](./DOCKER_DEPLOYMENT.md)。
 
 ## 相关文档
 
-- [API_DOCUMENTATION.md](./API_DOCUMENTATION.md)：更详细的接口说明
-- [DOCKER_DEPLOYMENT.md](./DOCKER_DEPLOYMENT.md)：Docker / 服务器部署方案
+- [DOCKER_DEPLOYMENT.md](./DOCKER_DEPLOYMENT.md)：当前仓库的 Docker 构建、运行与镜像分发说明
+- 本文“接口概览”章节：当前 API 请求字段、响应结构与 SSE 事件说明
 
 ## 贡献建议
 

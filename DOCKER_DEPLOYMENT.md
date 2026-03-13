@@ -1,280 +1,190 @@
 # Docker 部署指南
 
-## 部署方案概述
+## 适用范围
 
-本项目提供完整的Docker化部署方案，支持从macOS构建x86_64镜像并部署到Linux服务器。
+本文档只描述当前仓库里真实存在的 Docker 交付路径：
 
-## 🏗️ 架构设计
+- `Dockerfile`
+- `.env.example`
+- 本地自备的 `.env.docker`
+- `docker buildx build`
+- `docker save` / `docker load`
 
-```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   开发环境       │    │   Docker镜像     │    │   生产服务器     │
-│   (macOS)       │───▶│   (x86_64)      │───▶│   (Linux)       │
-│                 │    │                 │    │                 │
-│ • 源代码编译     │    │ • 多阶段构建     │    │ • Docker运行     │
-│ • 跨平台构建     │    │ • 镜像优化       │    │ • 负载均衡       │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-```
+当前仓库中不存在以下资产，因此本文不再描述它们：
 
-## 📦 文件结构
+- `deploy.sh`
+- `deploy/`
+- `docker-compose.yml`
+- `nginx/`
 
-```
-xy-assistant/
-├── Dockerfile              # 多阶段构建文件
-├── .dockerignore           # Docker忽略文件
-├── docker-compose.yml      # 服务编排文件
-├── .env.docker            # Docker环境配置
-├── deploy.sh              # 本地构建脚本
-├── deploy/
-│   └── server-deploy.sh   # 服务器部署脚本
-├── nginx/
-│   └── nginx.conf         # Nginx配置
-└── logs/                  # 日志目录
-```
+## 当前镜像行为
 
-## 🚀 快速部署
+当前 `Dockerfile` 采用多阶段构建，运行时特征如下：
 
-### 1. 本地构建（macOS）
+- 基础镜像：`python:3.11-slim`
+- 服务入口：`uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2`
+- 对外端口：`8000`
+- 健康检查：`GET /health`
+- 构建阶段会执行 `COPY .env.docker ./.env`
+
+最后一条很重要：镜像构建时会把 `.env.docker` 一并复制进镜像。如果你不希望敏感配置进入镜像，需要先修改 `Dockerfile`，再执行构建。
+
+## 1. 构建前准备
+
+先基于模板生成 Docker 环境文件：
 
 ```bash
-# 1. 配置环境变量
-cp .env .env.docker
-vim .env.docker  # 修改为生产环境配置
-
-# 2. 一键构建和部署
-./deploy.sh deploy
-
-# 或分步执行
-./deploy.sh build    # 构建镜像
-./deploy.sh save     # 保存镜像（会自动备份旧版 tar）
-./deploy.sh upload   # 上传到服务器
+cp .env.example .env.docker
 ```
 
-### 2. 服务器部署（Linux）
+至少确认这些变量已填写：
+
+- `DOUBAO_API_KEY`
+- `DOUBAO_API_URL`
+- `DOUBAO_MODEL`
+
+如果需要天气能力，还应填写：
+
+- `WEATHER_API_ENABLED=true`
+- `WEATHER_API_APP_CODE`
+- `WEATHER_API_BASE_URL`
+
+## 2. 本地构建镜像
 
 ```bash
-# 在服务器上执行
-cd /tmp/xy-assistant-deploy
-chmod +x server-deploy.sh
-./server-deploy.sh install
+DOCKER_CONTEXT=default docker buildx build \
+  --platform linux/amd64 \
+  --tag xy-assistant:latest \
+  --load .
 ```
 
-## 🔧 配置说明
-
-### Docker配置 (.env.docker)
+构建完成后可检查镜像：
 
 ```bash
-# 豆包API配置
-DOUBAO_API_KEY=your_api_key_here
-DOUBAO_API_URL=https://ark.cn-beijing.volces.com/api/v3/chat/completions
-DOUBAO_MODEL=your_model_id
-DOUBAO_TIMEOUT=10.0
-
-# 应用配置
-CONFIDENCE_THRESHOLD=0.7
-ENVIRONMENT=prod
-ENABLE_HIGH_CONFIDENCE_RULES=false
-
-# 天气服务（如需关闭可设为 false）
-WEATHER_API_ENABLED=true
-WEATHER_API_APP_CODE=your_weather_appcode
-WEATHER_API_BASE_URL=https://ali-weather.showapi.com
-WEATHER_API_TIMEOUT=5.0
-WEATHER_API_VERIFY_SSL=false
-WEATHER_DEFAULT_CITY=长沙市
-WEATHER_DEFAULT_LAT=28.22778
-WEATHER_DEFAULT_LON=112.93886
-WEATHER_CACHE_TTL=600
-WEATHER_REALTIME_CACHE_TTL=60
-WEATHER_GEO_CACHE_TTL=86400
-WEATHER_LLM_ENABLED=true
-WEATHER_LLM_CONFIDENCE_THRESHOLD=0.6
+docker images xy-assistant:latest
 ```
 
-### 部署脚本配置 (deploy.sh)
+## 3. 本地运行容器
 
 ```bash
-# 修改以下变量
-REGISTRY_URL=""      # 私有镜像仓库地址（可选）
-SERVER_HOST=""       # 服务器IP地址
-SERVER_USER=""       # 服务器用户名
+docker run --rm \
+  --name xy-assistant \
+  -p 8000:8000 \
+  --env-file .env.docker \
+  xy-assistant:latest
 ```
 
-## 🎯 部署选项
+说明：
 
-### 基础部署
-仅部署API服务，适合简单场景：
+- `--env-file .env.docker` 会在运行时覆盖同名环境变量
+- 即使传入了 `--env-file`，镜像里仍然已经包含构建时复制进去的 `.env`
+- 如果只想做本地验证，`--rm` 方便容器退出后自动清理
+
+## 4. 健康检查与接口验证
+
+容器启动后，可以用下面的命令验证：
+
 ```bash
-docker-compose up -d xy-assistant
+curl http://127.0.0.1:8000/health
 ```
 
-### 带Nginx的完整部署
-包含反向代理和负载均衡：
+预期响应：
+
+```json
+{"status":"ok"}
+```
+
+也可以直接打开接口文档：
+
+- Swagger UI: `http://127.0.0.1:8000/docs`
+- ReDoc: `http://127.0.0.1:8000/redoc`
+
+## 5. 导出镜像
+
+如果需要把镜像发到其他机器，可以直接导出 tar：
+
 ```bash
-docker-compose --profile with-nginx up -d
+docker save xy-assistant:latest -o xy-assistant-latest.tar
 ```
 
-### 集群部署
-多实例负载均衡：
+## 6. 服务器导入与运行
+
+将 `xy-assistant-latest.tar` 和服务器使用的环境文件传到目标机器后，执行：
+
 ```bash
-docker-compose up -d --scale xy-assistant=3
+docker load -i xy-assistant-latest.tar
 ```
 
-## 📊 资源配置
+然后启动容器：
 
-### 容器资源限制
-- **内存限制**: 512MB
-- **CPU限制**: 0.5核
-- **内存预留**: 256MB
-- **CPU预留**: 0.25核
-
-### 存储映射
-- **日志目录**: `./logs:/app/logs`
-- **Nginx日志**: `./logs/nginx:/var/log/nginx`
-
-## 🔍 监控和维护
-
-### 健康检查
 ```bash
-# 检查服务状态
-curl http://localhost:8000/health
-
-# 查看容器状态
-docker-compose ps
-
-# 查看服务日志
-docker-compose logs -f xy-assistant
+docker run -d \
+  --name xy-assistant \
+  --restart unless-stopped \
+  -p 8000:8000 \
+  --env-file /path/to/.env.docker \
+  xy-assistant:latest
 ```
 
-### 常用运维命令
+建议额外确认：
+
+- 服务器的 `8000` 端口已放行
+- 传入的 `.env.docker` 与目标环境一致
+- 如果前面用的是旧镜像标签，先停掉旧容器再启动新容器
+
+## 7. 常用运维命令
+
+查看运行状态：
+
 ```bash
-# 查看服务状态
-./deploy/server-deploy.sh status
-
-# 查看实时日志
-./deploy/server-deploy.sh logs
-
-# 重启服务
-./deploy/server-deploy.sh restart
-
-# 停止服务
-./deploy/server-deploy.sh stop
+docker ps --filter name=xy-assistant
 ```
 
-## 🔒 安全配置
+查看日志：
 
-### 1. 防火墙设置
 ```bash
-# 开放必要端口
-sudo ufw allow 80/tcp
-sudo ufw allow 443/tcp
-sudo ufw allow 8000/tcp
+docker logs -f xy-assistant
 ```
 
-### 2. SSL配置（可选）
+停止并删除容器：
+
 ```bash
-# 生成SSL证书
-mkdir -p nginx/ssl
-openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-  -keyout nginx/ssl/server.key \
-  -out nginx/ssl/server.crt
+docker stop xy-assistant
+docker rm xy-assistant
 ```
 
-### 3. 环境变量保护
+## 8. 常见问题
+
+### 构建时报 `.env.docker` 不存在
+
+原因：当前 `Dockerfile` 明确执行了 `COPY .env.docker ./.env`。
+
+处理方式：
+
 ```bash
-# 设置文件权限
-chmod 600 .env.docker
+cp .env.example .env.docker
 ```
 
-## 🚨 故障排除
+### 容器能启动，但天气功能不可用
 
-### 常见问题
+优先检查：
 
-1. **镜像构建失败**
-   ```bash
-   # 清理Docker缓存
-   docker system prune -a
-   ```
+- `WEATHER_API_ENABLED`
+- `WEATHER_API_APP_CODE`
+- `WEATHER_API_BASE_URL`
 
-2. **服务启动失败**
-   ```bash
-   # 查看详细日志
-   docker-compose logs xy-assistant
-   ```
+### 服务起来了，但接口请求超时
 
-3. **健康检查失败**
-   ```bash
-   # 检查端口占用
-   netstat -tlnp | grep 8000
-   ```
+优先检查：
 
-4. **内存不足**
-   ```bash
-   # 调整资源限制
-   vim docker-compose.yml
-   ```
+- 豆包相关环境变量是否正确
+- 目标机器是否能访问 `DOUBAO_API_URL`
+- 容器日志里是否有上游 API 错误
 
-### 日志分析
-```bash
-# 查看应用日志
-tail -f logs/app.log
+### 需要严格避免把密钥打进镜像
 
-# 查看Nginx访问日志
-tail -f logs/nginx/access.log
+当前仓库默认不满足这一要求。正确做法是：
 
-# 查看容器资源使用
-docker stats
-```
-
-## 📈 性能优化
-
-### 1. 镜像优化
-- 使用多阶段构建减少镜像大小
-- 选择Alpine基础镜像
-- 清理不必要的依赖
-
-### 2. 运行时优化
-- 启用Gzip压缩
-- 配置适当的worker数量
-- 使用内存缓存
-
-### 3. 网络优化
-- 使用Nginx反向代理
-- 配置HTTP/2
-- 启用keep-alive
-
-## 🔄 CI/CD集成
-
-### GitHub Actions示例
-```yaml
-name: Build and Deploy
-on:
-  push:
-    branches: [ main ]
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - name: Build and Deploy
-        run: |
-          ./deploy.sh build
-          ./deploy.sh save
-          # 上传到服务器
-```
-
-## 📞 技术支持
-
-如遇问题，请检查：
-1. Docker和Docker Compose版本
-2. 系统资源使用情况
-3. 网络连接状态
-4. 环境变量配置
-5. 日志文件内容
-
----
-
-**最后更新**: 2025-09-29  
-**支持的架构**: x86_64  
-**测试环境**: Ubuntu 20.04, CentOS 8, Debian 11
+1. 修改 `Dockerfile`，移除 `COPY .env.docker ./.env`
+2. 重新构建镜像
+3. 只在运行时通过 `--env-file` 或宿主机环境变量注入配置
